@@ -3,6 +3,30 @@ import numpy as np
 import tensorflow as tf
 from DataLoader import *
 
+
+FLAGS = tf.app.flags.FLAGS
+tf.app.flags.DEFINE_integer('training_iters', 100000,
+                            """Number of batches to run.""")
+
+tf.app.flags.DEFINE_integer('step_display', 50,
+                            """Number of batches to run before evaluating
+                            and printing model performance metrics""")
+
+tf.app.flags.DEFINE_integer('step_save', 10000,
+                            """Number of batches to run before saving parameter checkpoint""")
+
+tf.app.flags.DEFINE_string('logdir', '.',
+                            """directory where to save the summary outputs for tensorboard""")
+
+tf.app.flags.DEFINE_string('modeldir', '.',
+                            """directory where to save parameter checkpoints""")
+#tf.app.flags.DEFINE_integer('num_gpus', 1,
+#                            """How many GPUs to use.""")
+tf.app.flags.DEFINE_boolean('log_device_placement', False,
+                            """Whether to log device placement.""")
+
+
+
 # Dataset Parameters
 batch_size = 200
 load_size = 256
@@ -13,10 +37,10 @@ data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842])
 # Training Parameters
 learning_rate = 0.001
 dropout = 0.5 # Dropout, probability to keep units
-training_iters = 100000
-step_display = 50
-step_save = 10000
-path_save = 'alexnet'
+training_iters = FLAGS.training_iters
+step_display = FLAGS.step_display
+step_save = FLAGS.step_save
+path_save = FLAGS.modeldir + '/alexnet'
 start_from = ''
 
 def alexnet(x, keep_dropout):
@@ -118,25 +142,52 @@ keep_dropout = tf.placeholder(tf.float32)
 # Construct model
 logits = alexnet(x, keep_dropout)
 
+
 # Define loss and optimizer
-loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
-train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
+
+# (orm: added tensorboard annotated scalars to get plots more easily)
+def make_named_loss(logits, y, name=None):
+    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
+    if name != None:
+        summ = tf.scalar_summary('%s loss (raw)' % name, loss)
+        return [loss, summ]
+
+    return [loss]
+
+(lossdiff,) = make_named_loss(logits, y)
+
+train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(lossdiff)
+
 
 # Evaluate model
-accuracy1 = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, 1), tf.float32))
-accuracy5 = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, 5), tf.float32))
+def make_named_top(logits, y, k, name):
+    topkaccuracy  = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, k), tf.float32))
+    summ = tf.scalar_summary('%s top%d (raw)' % (name, k), topkaccuracy)
+    return [topkaccuracy,summ]
+
+
+def make_instrumented_target(logits, y, name):
+    loss = make_named_loss(logits, y, name)
+    accuracy1 = make_named_top(logits, y, 1, name)
+    accuracy5 = make_named_top(logits, y, 5, name)
+
+    (vals, summaries) = zip(loss, accuracy1, accuracy5)
+    return list(vals) + [tf.merge_summary(summaries)]
+
+
+training_eval_target = make_instrumented_target(logits, y, 'training')
+val_eval_target = make_instrumented_target(logits, y, 'validation')
+(_, accuracy1final, accuracy5final, _) = make_instrumented_target(logits, y, 'final')
 
 # define initialization
 init = tf.initialize_all_variables()
 
 # define saver
 saver = tf.train.Saver()
-
-# define summary writer
-#writer = tf.train.SummaryWriter('.', graph=tf.get_default_graph())
-
+summary_writer = tf.train.SummaryWriter(FLAGS.logdir, graph=tf.get_default_graph())
 # Launch the graph
-with tf.Session() as sess:
+with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement)) as sess:
+
     # Initialization
     if len(start_from)>1:
         saver.restore(sess, start_from)
@@ -153,19 +204,21 @@ with tf.Session() as sess:
             print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
             # Calculate batch loss and accuracy on training set
-            l, acc1, acc5 = sess.run([loss, accuracy1, accuracy5], feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.}) 
+            l, acc1, acc5, tsummary = sess.run(training_eval_target, feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.}) 
             print("-Iter " + str(step) + ", Training Loss= " + \
             "{:.4f}".format(l) + ", Accuracy Top1 = " + \
             "{:.2f}".format(acc1) + ", Top5 = " + \
             "{:.2f}".format(acc5))
-
+            summary_writer.add_summary(tsummary, step)
+            
             # Calculate batch loss and accuracy on validation set
             images_batch_val, labels_batch_val = loader_val.next_batch(batch_size)    
-            l, acc1, acc5 = sess.run([loss, accuracy1, accuracy5], feed_dict={x: images_batch_val, y: labels_batch_val, keep_dropout: 1.}) 
+            l, acc1, acc5, vsummary = sess.run(val_eval_target, feed_dict={x: images_batch_val, y: labels_batch_val, keep_dropout: 1.}) 
             print("-Iter " + str(step) + ", Validation Loss= " + \
             "{:.4f}".format(l) + ", Accuracy Top1 = " + \
             "{:.2f}".format(acc1) + ", Top5 = " + \
             "{:.2f}".format(acc5))
+            summary_writer.add_summary(vsummary, step)
         
         # Run optimization op (backprop)
         sess.run(train_optimizer, feed_dict={x: images_batch, y: labels_batch, keep_dropout: dropout})
@@ -176,12 +229,15 @@ with tf.Session() as sess:
         if step % step_save == 0:
             saver.save(sess, path_save, global_step=step)
             print("Model saved at Iter %d !" %(step))
-        
+
+            
+    saver.save(sess, path_save, global_step=step)
+    print("Final model at iter %d saved!" %(step))
     print("Optimization Finished!")
 
 
     # Evaluate on the whole validation set
-    print('Evaludation on the whole validation set...')
+    print('Evaluation on the whole validation set...')
     # (orm) added + batch_size - 1 to make this work with small validation sets (and give 1)
     num_batch = (loader_val.size() + batch_size - 1) // batch_size
     acc1_total = 0.
@@ -189,12 +245,12 @@ with tf.Session() as sess:
     loader_val.reset()
     for i in range(num_batch):
         images_batch, labels_batch = loader_val.next_batch(batch_size)    
-        acc1, acc5 = sess.run([accuracy1, accuracy5], feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.})
+        acc1, acc5 = sess.run([accuracy1final, accuracy5final], feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.})
         acc1_total += acc1
         acc5_total += acc5
-        print("Validation Accuracy Top1 = " + \
-            "{:.2f}".format(acc1) + ", Top5 = " + \
-            "{:.2f}".format(acc5))
+        # print("Validation Accuracy Top1 = " + \
+        #     "{:.2f}".format(acc1) + ", Top5 = " + \
+        #     "{:.2f}".format(acc5))
 
     acc1_total /= num_batch
     acc5_total /= num_batch
