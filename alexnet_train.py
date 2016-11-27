@@ -146,45 +146,44 @@ logits = alexnet(x, keep_dropout)
 # Define loss and optimizer
 
 # (orm: added tensorboard annotated scalars to get plots more easily)
-def make_named_loss(logits, y, name=None):
+def make_named_loss(logits, y):
     loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
-    if name != None:
-        summ = tf.scalar_summary('%s loss (raw)' % name, loss)
-        return [loss, summ]
+    summ = tf.scalar_summary('loss (raw)', loss)
+    return [loss, summ]
 
-    return [loss]
 
-(lossdiff,) = make_named_loss(logits, y)
+(lossdiff_train,_) = make_named_loss(logits, y)
 
-train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(lossdiff)
-
+train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(lossdiff_train)
 
 # Evaluate model
-def make_named_top(logits, y, k, name):
+def make_named_top(logits, y, k):
     topkaccuracy  = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, k), tf.float32))
-    summ = tf.scalar_summary('%s top%d (raw)' % (name, k), topkaccuracy)
+    summ = tf.scalar_summary('top%d (raw)' % k, topkaccuracy)
     return [topkaccuracy,summ]
 
 
-def make_instrumented_target(logits, y, name):
-    loss = make_named_loss(logits, y, name)
-    accuracy1 = make_named_top(logits, y, 1, name)
-    accuracy5 = make_named_top(logits, y, 5, name)
+def make_instrumented_target(logits, y):
+    loss = make_named_loss(logits, y)
+    accuracy1 = make_named_top(logits, y, 1)
+    accuracy5 = make_named_top(logits, y, 5)
 
     (vals, summaries) = zip(loss, accuracy1, accuracy5)
     return list(vals) + [tf.merge_summary(summaries)]
 
 
-training_eval_target = make_instrumented_target(logits, y, 'training')
-val_eval_target = make_instrumented_target(logits, y, 'validation')
-(_, accuracy1final, accuracy5final, _) = make_instrumented_target(logits, y, 'final')
+training_eval_target = make_instrumented_target(logits, y)
+val_eval_target = make_instrumented_target(logits, y)
+(_, accuracy1final, accuracy5final, _) = make_instrumented_target(logits, y)
 
 # define initialization
 init = tf.initialize_all_variables()
 
 # define saver
 saver = tf.train.Saver()
-summary_writer = tf.train.SummaryWriter(FLAGS.logdir, graph=tf.get_default_graph())
+summary_writer_train = tf.train.SummaryWriter(FLAGS.logdir+'/train', graph=tf.get_default_graph())
+summary_writer_eval = tf.train.SummaryWriter(FLAGS.logdir+'/eval', graph=tf.get_default_graph())
+
 # Launch the graph
 with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement)) as sess:
 
@@ -209,7 +208,7 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
             "{:.4f}".format(l) + ", Accuracy Top1 = " + \
             "{:.2f}".format(acc1) + ", Top5 = " + \
             "{:.2f}".format(acc5))
-            summary_writer.add_summary(tsummary, step)
+            summary_writer_train.add_summary(tsummary, step)
             
             # Calculate batch loss and accuracy on validation set
             images_batch_val, labels_batch_val = loader_val.next_batch(batch_size)    
@@ -218,7 +217,7 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
             "{:.4f}".format(l) + ", Accuracy Top1 = " + \
             "{:.2f}".format(acc1) + ", Top5 = " + \
             "{:.2f}".format(acc5))
-            summary_writer.add_summary(vsummary, step)
+            summary_writer_eval.add_summary(vsummary, step)
         
         # Run optimization op (backprop)
         sess.run(train_optimizer, feed_dict={x: images_batch, y: labels_batch, keep_dropout: dropout})
