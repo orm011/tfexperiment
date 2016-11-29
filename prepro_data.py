@@ -2,6 +2,11 @@ import os
 import numpy as np
 import h5py
 import scipy.misc
+import tensorflow as tf
+
+FLAGS = tf.app.flags.FLAGS
+tf.app.flags.DEFINE_integer(datapath, '.',
+                            """Location of train/ val/ and test/ folders and their .txt descriptors""")
 
 def createH5(params):
 
@@ -42,22 +47,32 @@ def createH5(params):
 
 	f_h5.close()
 
+
 if __name__=='__main__':
 	params_train = {
 		'name': 'miniplaces',
 		'split': 'train',
 		'img_resize': 256,
-		'data_root': 'YOURPATH/images/',	# MODIFY PATH ACCORDINGLY
-    		'data_list': 'YOURPATH/train.txt'	# MODIFY PATH ACCORDINGLY	
+		'data_root': '%s' % FLAGS.datapath,
+    		'data_list': '%s/train.txt' % FLAGS.datapath
 	}
 
 	params_val = {
 		'name': 'miniplaces',
 		'split': 'val',
 		'img_resize': 256,
-		'data_root': 'YOURPATH/images/',	# MODIFY PATH ACCORDINGLY
-    		'data_list': 'YOURPATH/val.txt'		# MODIFY PATH ACCORDINGLY
+		'data_root': '%s/' % FLAGS.datapath,
+    		'data_list': '%s/val.txt' % FLAGS.datapath
+	}
+        
+        params_test = {
+		'name': 'miniplaces',
+		'split': 'test',
+		'img_resize': 256,
+		'data_root': '%s/' % FLAGS.datapath,
+    		'data_list': '%s/test.txt' % FLAGS.datapath
 	}
 
 	createH5(params_train)
 	createH5(params_val)
+        createH5(params_test)
