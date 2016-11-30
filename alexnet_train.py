@@ -2,8 +2,12 @@ import os, datetime
 import numpy as np
 import tensorflow as tf
 from DataLoader import *
+import time
+import signal
+import sys
+import io
 
-
+TS = time.strftime("%a_%Y-%m-%d_%H-%M-%S",time.localtime())
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_integer('training_iters', 100000,
                             """Number of batches to run.""")
@@ -15,17 +19,58 @@ tf.app.flags.DEFINE_integer('step_display', 50,
 tf.app.flags.DEFINE_integer('step_save', 10000,
                             """Number of batches to run before saving parameter checkpoint""")
 
-tf.app.flags.DEFINE_string('logdir', '.',
-                            """directory where to save the summary outputs for tensorboard""")
+tf.app.flags.DEFINE_string('mnemonic', '',
+                           """String used (in addition to timestamp) to tag models and logs""")
 
-tf.app.flags.DEFINE_string('modeldir', '.',
-                            """directory where to save parameter checkpoints""")
+tf.app.flags.DEFINE_string('outputdir', 'tf_outputdir',
+                           """Path used to save all output directories (including logs and models) of this run. Will make one if needed""")
+
+tf.app.flags.DEFINE_string('start_from', '',
+                           """model folder with the checkpoints to resume training from. empty means random init.""")
+
 #tf.app.flags.DEFINE_integer('num_gpus', 1,
 #                            """How many GPUs to use.""")
+
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 
 
+# Id is used to identify a lot of our output files uniquely within outputdir
+ID = TS
+if FLAGS.mnemonic != '':
+    ID = FLAGS.mnemonic + '_' + TS
+
+MODELDIR = FLAGS.outputdir + '/models_' + ID
+LOGDIR = FLAGS.outputdir + '/logs_' + ID
+
+if os.path.exists(MODELDIR):
+    print("WARNING: identical folder for outputs already exists. It should be unique to avoid overwrites.")
+    sys.exit(1)
+
+if os.path.exists(LOGDIR):
+    print("WARNING: identical folder for logs already exists. It should be unique to avoid overwrites.")
+    sys.exit(1)
+
+os.makedirs(MODELDIR)
+os.makedirs(LOGDIR)
+
+# log stuff also to a file 
+class Unbuffered(io.TextIOBase):
+    def __init__(self, stream, filename):
+        self.stream = stream
+        self.tee = open(filename,"a")  # File where you need to keep the logs
+    def write(self, data):
+        self.stream.write(data)
+        self.tee.write(data)    # Write the data of stdout here to a text file as well
+        self.stream.flush()        
+        self.tee.flush()
+
+sys.stdout=Unbuffered(sys.stdout, LOGDIR+ '/' + ID + '_logs.out')
+sys.stderr=Unbuffered(sys.stderr, LOGDIR+ '/' + ID + '_logs.err')
+                                              
+# define logger params
+summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
+summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
 
 # Dataset Parameters
 batch_size = 200
@@ -40,9 +85,26 @@ dropout = 0.5 # Dropout, probability to keep units
 training_iters = FLAGS.training_iters
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
-path_save = FLAGS.modeldir + '/alexnet'
-start_from = ''
+path_save = MODELDIR + '/model_' + ID
+start_from = FLAGS.start_from
 
+def print_param_sizes():
+    print("Summary of model layer sizes (highest to low):")
+    total_parameters = 0
+    per_variable = {}
+    for variable in tf.trainable_variables():
+        # shape is an array of tf.Dimension
+        shape = variable.get_shape()
+        variable_parameters = 1
+        for dim in shape:
+            variable_parameters *= dim.value
+            total_parameters += variable_parameters
+        per_variable[variable] = variable_parameters
+
+    for (v,w) in sorted(per_variable.items(), key=lambda x : -x[1]):
+        print("(%s:%s). shape: %s. total: %d/%d (%.0f%%)" %
+              (v.name, v.dtype, v.get_shape(), w, total_parameters, 100*(w/total_parameters)))
+        
 def alexnet(x, keep_dropout):
     weights = {
         'wc1': tf.Variable(tf.random_normal([11, 11, 3, 96], stddev=np.sqrt(2./(11*11*3)))),
@@ -144,11 +206,10 @@ logits = alexnet(x, keep_dropout)
 
 
 # Define loss and optimizer
-
 # (orm: added tensorboard annotated scalars to get plots more easily)
 def make_named_loss(logits, y):
     loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
-    summ = tf.scalar_summary('loss (raw)', loss)
+    summ = tf.scalar_summary('loss', loss)
     return [loss, summ]
 
 
@@ -159,7 +220,8 @@ train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(l
 # Evaluate model
 def make_named_top(logits, y, k):
     topkaccuracy  = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, k), tf.float32))
-    summ = tf.scalar_summary('top%d (raw)' % k, topkaccuracy)
+    topkerror = 1 - topkaccuracy
+    summ = tf.scalar_summary('top-%d Error' % k, topkerror)
     return [topkaccuracy,summ]
 
 
@@ -177,25 +239,50 @@ val_eval_target = make_instrumented_target(logits, y)
 (_, accuracy1final, accuracy5final, _) = make_instrumented_target(logits, y)
 
 # define initialization
+with tf.device("/cpu:0"):
+    global_step = tf.Variable(0, name='global_step', trainable=False)
+
 init = tf.initialize_all_variables()
-
-# define saver
+# define saver. it will include global step
 saver = tf.train.Saver()
-summary_writer_train = tf.train.SummaryWriter(FLAGS.logdir+'/train', graph=tf.get_default_graph())
-summary_writer_eval = tf.train.SummaryWriter(FLAGS.logdir+'/eval', graph=tf.get_default_graph())
+print("run id %s" % ID)
+print_param_sizes()
+# both the saver and print need to be done after variables are
+# created by call to alexnet
 
+ctrlc_received = False
 # Launch the graph
 with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement)) as sess:
-
+    original_sigint = signal.getsignal(signal.SIGINT)
+    
     # Initialization
     if len(start_from)>1:
         saver.restore(sess, start_from)
+        print("restored state from %s" % (start_from,))
     else:
+        print("starting from random state...")
         sess.run(init)
-    
-    step = 0
 
+    step = sess.run(global_step) # usable by python code
+    print("Initial step is %d" % step)
+
+    # (orm) in case of Ctrl+C, save current model then exit
+    def record_signal(signum, frame):
+        global ctrlc_received
+        signal.signal(signal.SIGINT, original_sigint)
+        print("Control-C received. will save before next iteration and exit... Ctrl-C again will kill it immediately")
+        ctrlc_received = True
+
+    signal.signal(signal.SIGINT, record_signal)
+    
     while step < training_iters:
+        if ctrlc_received or (step > 0 and step % step_save == 0):
+            saver.save(sess, path_save, global_step=step)
+            print("Model saved as of before step %d !" %(step))
+
+        if ctrlc_received:
+            sys.exit(1)
+        
         # Load a batch of training data
         images_batch, labels_batch = loader_train.next_batch(batch_size)
         
@@ -221,13 +308,7 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
         
         # Run optimization op (backprop)
         sess.run(train_optimizer, feed_dict={x: images_batch, y: labels_batch, keep_dropout: dropout})
-        
-        step += 1
-        
-        # Save model
-        if step % step_save == 0:
-            saver.save(sess, path_save, global_step=step)
-            print("Model saved at Iter %d !" %(step))
+        step = sess.run(global_step.assign(step + 1))
 
             
     saver.save(sess, path_save, global_step=step)
