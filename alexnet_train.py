@@ -7,6 +7,17 @@ import signal
 import sys
 import io
 
+# log stuff also to a file 
+class Unbuffered(io.TextIOBase):
+    def __init__(self, stream, filename):
+        self.stream = stream
+        self.tee = open(filename,"a")  # File where you need to keep the logs
+    def write(self, data):
+        self.stream.write(data)
+        self.tee.write(data)    # Write the data of stdout here to a text file as well
+        self.stream.flush()        
+        self.tee.flush()
+
 TS = time.strftime("%a_%Y-%m-%d_%H-%M-%S",time.localtime())
 FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_integer('training_iters', 100000,
@@ -26,7 +37,12 @@ tf.app.flags.DEFINE_string('outputdir', 'tf_outputdir',
                            """Path used to save all output directories (including logs and models) of this run. Will make one if needed""")
 
 tf.app.flags.DEFINE_string('start_from', '',
-                           """model folder with the checkpoints to resume training from. empty means random init.""")
+                           """if it is a <folder>, then we assume there is a `checkpoint` manifest file, and we use the most recent entry from there. 
+                           if it is a <file>, we just use that directly.
+                           if it is <unset>, we use random init.""")
+
+tf.app.flags.DEFINE_integer('step_full_validation', 200,
+                           """how often to run valdation metrics on full validation set. Full validation takes about 30 sec on 1 GPU""")
 
 #tf.app.flags.DEFINE_integer('num_gpus', 1,
 #                            """How many GPUs to use.""")
@@ -53,24 +69,13 @@ if os.path.exists(LOGDIR):
 
 os.makedirs(MODELDIR)
 os.makedirs(LOGDIR)
-
-# log stuff also to a file 
-class Unbuffered(io.TextIOBase):
-    def __init__(self, stream, filename):
-        self.stream = stream
-        self.tee = open(filename,"a")  # File where you need to keep the logs
-    def write(self, data):
-        self.stream.write(data)
-        self.tee.write(data)    # Write the data of stdout here to a text file as well
-        self.stream.flush()        
-        self.tee.flush()
-
 sys.stdout=Unbuffered(sys.stdout, LOGDIR+ '/' + ID + '_logs.out')
 sys.stderr=Unbuffered(sys.stderr, LOGDIR+ '/' + ID + '_logs.err')
                                               
 # define logger params
 summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
 summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
+summary_writer_full_validation = tf.train.SummaryWriter(LOGDIR+'/fullval_'+ ID, graph=tf.get_default_graph())
 
 # Dataset Parameters
 batch_size = 200
@@ -222,21 +227,21 @@ def make_named_top(logits, y, k):
     topkaccuracy  = tf.reduce_mean(tf.cast(tf.nn.in_top_k(logits, y, k), tf.float32))
     topkerror = 1 - topkaccuracy
     summ = tf.scalar_summary('top-%d Error' % k, topkerror)
-    return [topkaccuracy,summ]
+    return [topkerror,summ]
 
 
 def make_instrumented_target(logits, y):
     loss = make_named_loss(logits, y)
-    accuracy1 = make_named_top(logits, y, 1)
-    accuracy5 = make_named_top(logits, y, 5)
+    top1err = make_named_top(logits, y, 1)
+    top5err = make_named_top(logits, y, 5)
 
-    (vals, summaries) = zip(loss, accuracy1, accuracy5)
+    (vals, summaries) = zip(loss, top1err, top5err)
     return list(vals) + [tf.merge_summary(summaries)]
 
 
 training_eval_target = make_instrumented_target(logits, y)
 val_eval_target = make_instrumented_target(logits, y)
-(_, accuracy1final, accuracy5final, _) = make_instrumented_target(logits, y)
+val_full_validation = make_instrumented_target(logits, y)
 
 # define initialization
 with tf.device("/cpu:0"):
@@ -274,6 +279,35 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
         ctrlc_received = True
 
     signal.signal(signal.SIGINT, record_signal)
+
+    def full_validation():
+        # Evaluate on the whole validation set
+        print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        print('Evaluation on the whole validation_set at step %d...' % step)
+        # (orm) added + batch_size - 1 to make this work with small validation sets (and give 1)
+        num_batch = (loader_val.size() + batch_size - 1) // batch_size
+        err1_total = 0.
+        err5_total = 0.
+        loader_val.reset()
+        for i in range(num_batch):
+            images_batch, labels_batch = loader_val.next_batch(batch_size)    
+            (_, err1, err5, _) = sess.run(val_full_validation, feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.})
+            err1_total += err1
+            err5_total += err5
+
+        err1_total /= num_batch
+        err5_total /= num_batch
+
+        # need to run this code just for logging into the tensorboard stuff
+        top1error = tf.scalar_summary('top-%d Error' % 1, tf.constant(err1_total))
+        top5error = tf.scalar_summary('top-%d Error' % 5, tf.constant(err5_total))
+        sums = tf.merge_summary([top1error, top5error])
+        fullvalsummary = sess.run(sums)
+        summary_writer_full_validation.add_summary(fullvalsummary, step)
+
+        print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+        print('Evaluation Finished! Error Top1 = ' + "{:.4f}".format(err1_total) + ", Top5 = " + "{:.4f}".format(err5_total))
+
     
     while step < training_iters:
         if ctrlc_received or (step > 0 and step % step_save == 0):
@@ -290,22 +324,25 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
             print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
             # Calculate batch loss and accuracy on training set
-            l, acc1, acc5, tsummary = sess.run(training_eval_target, feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.}) 
+            l, err1, err5, tsummary = sess.run(training_eval_target, feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.}) 
             print("-Iter " + str(step) + ", Training Loss= " + \
-            "{:.4f}".format(l) + ", Accuracy Top1 = " + \
-            "{:.2f}".format(acc1) + ", Top5 = " + \
-            "{:.2f}".format(acc5))
+            "{:.4f}".format(l) + ", Error Top1 = " + \
+            "{:.2f}".format(err1) + ", Top5 = " + \
+            "{:.2f}".format(err5))
             summary_writer_train.add_summary(tsummary, step)
             
             # Calculate batch loss and accuracy on validation set
             images_batch_val, labels_batch_val = loader_val.next_batch(batch_size)    
-            l, acc1, acc5, vsummary = sess.run(val_eval_target, feed_dict={x: images_batch_val, y: labels_batch_val, keep_dropout: 1.}) 
+            l, err1, err5, vsummary = sess.run(val_eval_target, feed_dict={x: images_batch_val, y: labels_batch_val, keep_dropout: 1.}) 
             print("-Iter " + str(step) + ", Validation Loss= " + \
-            "{:.4f}".format(l) + ", Accuracy Top1 = " + \
-            "{:.2f}".format(acc1) + ", Top5 = " + \
-            "{:.2f}".format(acc5))
+            "{:.4f}".format(l) + ", Error Top1 = " + \
+            "{:.2f}".format(err1) + ", Top5 = " + \
+            "{:.2f}".format(err5))
             summary_writer_eval.add_summary(vsummary, step)
-        
+
+        if step > 0 and step % FLAGS.step_full_validation == 0:
+            full_validation()
+                        
         # Run optimization op (backprop)
         sess.run(train_optimizer, feed_dict={x: images_batch, y: labels_batch, keep_dropout: dropout})
         step = sess.run(global_step.assign(step + 1))
@@ -315,23 +352,3 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
     print("Final model at iter %d saved!" %(step))
     print("Optimization Finished!")
 
-
-    # Evaluate on the whole validation set
-    print('Evaluation on the whole validation set...')
-    # (orm) added + batch_size - 1 to make this work with small validation sets (and give 1)
-    num_batch = (loader_val.size() + batch_size - 1) // batch_size
-    acc1_total = 0.
-    acc5_total = 0.
-    loader_val.reset()
-    for i in range(num_batch):
-        images_batch, labels_batch = loader_val.next_batch(batch_size)    
-        acc1, acc5 = sess.run([accuracy1final, accuracy5final], feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.})
-        acc1_total += acc1
-        acc5_total += acc5
-        # print("Validation Accuracy Top1 = " + \
-        #     "{:.2f}".format(acc1) + ", Top5 = " + \
-        #     "{:.2f}".format(acc5))
-
-    acc1_total /= num_batch
-    acc5_total /= num_batch
-    print('Evaluation Finished! Accuracy Top1 = ' + "{:.4f}".format(acc1_total) + ", Top5 = " + "{:.4f}".format(acc5_total))
