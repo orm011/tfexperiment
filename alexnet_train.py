@@ -328,9 +328,8 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
         if ctrlc_received or (step > 0 and step % step_save == 0):
             saver.save(sess, path_save, global_step=step)
             print("Model saved as of before step %d !" %(step))
-
-        if ctrlc_received:
-            sys.exit(1)
+            if ctrlc_received:
+                os.kill(os.getpid(), signal.SIGINT)
         
         # Load a batch of training data
         images_batch, labels_batch = loader_train.next_batch(batch_size)
