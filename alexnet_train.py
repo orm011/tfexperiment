@@ -71,7 +71,24 @@ os.makedirs(MODELDIR)
 os.makedirs(LOGDIR)
 sys.stdout=Unbuffered(sys.stdout, LOGDIR+ '/' + ID + '_logs.out')
 sys.stderr=Unbuffered(sys.stderr, LOGDIR+ '/' + ID + '_logs.err')
-                                              
+
+path_save = MODELDIR + '/model_' + ID + '.ckpt'
+start_from = FLAGS.start_from
+print(sys.argv)
+print("MODELDIR (can use as value for --start_from):\n%s" % MODELDIR)
+print("LOGDIR:\n%s" % LOGDIR)
+
+if start_from != '':
+    if os.path.isdir(start_from):
+        print("CHECKPOINT DIR:\n%s" % start_from)
+        cs = tf.train.get_checkpoint_state(start_from)
+        print("manifest file contents:\n%s" % cs)
+        cf = cs.model_checkpoint_path
+    elif os.path.isfile(start_from):
+        cf = start_from
+
+    print("CHECKPOINT FILE TO USE: %s" % cf)
+
 # define logger params
 summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
 summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
@@ -90,8 +107,6 @@ dropout = 0.5 # Dropout, probability to keep units
 training_iters = FLAGS.training_iters
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
-path_save = MODELDIR + '/model_' + ID
-start_from = FLAGS.start_from
 
 def print_param_sizes():
     print("Summary of model layer sizes (highest to low):")
@@ -262,8 +277,8 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
     
     # Initialization
     if len(start_from)>1:
-        saver.restore(sess, start_from)
-        print("restored state from %s" % (start_from,))
+        saver.restore(sess, cf)
+        print("restored state from %s" % (cf,))
     else:
         print("starting from random state...")
         sess.run(init)
