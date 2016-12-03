@@ -6,6 +6,8 @@ import time
 import signal
 import sys
 import io
+import alexnet
+
 
 # log stuff also to a file 
 class Unbuffered(io.TextIOBase):
@@ -41,8 +43,9 @@ tf.app.flags.DEFINE_string('start_from', '',
                            if it is a <file>, we just use that directly.
                            if it is <unset>, we use random init.""")
 
-tf.app.flags.DEFINE_integer('step_full_validation', 200,
-                           """how often to run valdation metrics on full validation set. Full validation takes about 30 sec on 1 GPU""")
+tf.app.flags.DEFINE_integer('step_full_validation', 100000,
+                            """how often to run valdation metrics on full validation set. WARNING: Seems to make the program go slower and slower over time, 
+and the smoother batch-error in tensorboard tracks it very well anyway.""")
 
 #tf.app.flags.DEFINE_integer('num_gpus', 1,
 #                            """How many GPUs to use.""")
@@ -125,71 +128,6 @@ def print_param_sizes():
         print("(%s:%s). shape: %s. total: %d/%d (%.0f%%)" %
               (v.name, v.dtype, v.get_shape(), w, total_parameters, 100*(w/total_parameters)))
         
-def alexnet(x, keep_dropout):
-    weights = {
-        'wc1': tf.Variable(tf.random_normal([11, 11, 3, 96], stddev=np.sqrt(2./(11*11*3)))),
-        'wc2': tf.Variable(tf.random_normal([5, 5, 96, 256], stddev=np.sqrt(2./(5*5*96)))),
-        'wc3': tf.Variable(tf.random_normal([3, 3, 256, 384], stddev=np.sqrt(2./(3*3*256)))),
-        'wc4': tf.Variable(tf.random_normal([3, 3, 384, 256], stddev=np.sqrt(2./(3*3*384)))),
-        'wc5': tf.Variable(tf.random_normal([3, 3, 256, 256], stddev=np.sqrt(2./(3*3*256)))),
-
-        'wf6': tf.Variable(tf.random_normal([7*7*256, 4096], stddev=np.sqrt(2./(7*7*256)))),
-        'wf7': tf.Variable(tf.random_normal([4096, 4096], stddev=np.sqrt(2./4096))),
-        'wo': tf.Variable(tf.random_normal([4096, 100], stddev=np.sqrt(2./4096)))
-    }
-
-    biases = {
-        'bc1': tf.Variable(tf.zeros(96)),
-        'bc2': tf.Variable(tf.zeros(256)),
-        'bc3': tf.Variable(tf.zeros(384)),
-        'bc4': tf.Variable(tf.zeros(256)),
-        'bc5': tf.Variable(tf.zeros(256)),
-
-        'bf6': tf.Variable(tf.ones(4096)),
-        'bf7': tf.Variable(tf.ones(4096)),
-        'bo': tf.Variable(tf.ones(100))
-    }
-
-    # Conv + ReLU + LRN + Pool, 224->55->27
-    conv1 = tf.nn.conv2d(x, weights['wc1'], strides=[1, 4, 4, 1], padding='SAME')
-    conv1 = tf.nn.relu(tf.nn.bias_add(conv1, biases['bc1']))
-    lrn1 = tf.nn.local_response_normalization(conv1, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
-    pool1 = tf.nn.max_pool(lrn1, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
-
-    # Conv + ReLU + LRN + Pool, 27-> 13
-    conv2 = tf.nn.conv2d(pool1, weights['wc2'], strides=[1, 1, 1, 1], padding='SAME')
-    conv2 = tf.nn.relu(tf.nn.bias_add(conv2, biases['bc2']))
-    lrn2 = tf.nn.local_response_normalization(conv2, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
-    pool2 = tf.nn.max_pool(lrn2, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
-
-    # Conv + ReLU, 13-> 13
-    conv3 = tf.nn.conv2d(pool2, weights['wc3'], strides=[1, 1, 1, 1], padding='SAME')
-    conv3 = tf.nn.relu(tf.nn.bias_add(conv3, biases['bc3']))
-
-    # Conv + ReLU, 13-> 13
-    conv4 = tf.nn.conv2d(conv3, weights['wc4'], strides=[1, 1, 1, 1], padding='SAME')
-    conv4 = tf.nn.relu(tf.nn.bias_add(conv4, biases['bc4']))
-
-    # Conv + ReLU + Pool, 13->6
-    conv5 = tf.nn.conv2d(conv4, weights['wc5'], strides=[1, 1, 1, 1], padding='SAME')
-    conv5 = tf.nn.relu(tf.nn.bias_add(conv5, biases['bc5']))
-    pool5 = tf.nn.max_pool(conv5, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
-
-    # FC + ReLU + Dropout
-    fc6 = tf.reshape(pool5, [-1, weights['wf6'].get_shape().as_list()[0]])
-    fc6 = tf.add(tf.matmul(fc6, weights['wf6']), biases['bf6'])
-    fc6 = tf.nn.relu(fc6)
-    fc6 = tf.nn.dropout(fc6, keep_dropout)
-    
-    # FC + ReLU + Dropout
-    fc7 = tf.add(tf.matmul(fc6, weights['wf7']), biases['bf7'])
-    fc7 = tf.nn.relu(fc7)
-    fc7 = tf.nn.dropout(fc7, keep_dropout)
-
-    # Output FC
-    out = tf.add(tf.matmul(fc7, weights['wo']), biases['bo'])
-    
-    return out
 
 # Construct dataloader
 opt_data_train = {
@@ -222,20 +160,14 @@ y = tf.placeholder(tf.int64, None)
 keep_dropout = tf.placeholder(tf.float32)
 
 # Construct model
-logits = alexnet(x, keep_dropout)
-
+logits = alexnet.model(x, keep_dropout)
 
 # Define loss and optimizer
-# (orm: added tensorboard annotated scalars to get plots more easily)
+# tensorboard annotated scalars to get plots more easily
 def make_named_loss(logits, y):
-    loss = tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
+    loss = alexnet.loss(logits,y)
     summ = tf.scalar_summary('loss', loss)
     return [loss, summ]
-
-
-(lossdiff_train,_) = make_named_loss(logits, y)
-
-train_optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(lossdiff_train)
 
 # Evaluate model
 def make_named_top(logits, y, k):
@@ -243,7 +175,6 @@ def make_named_top(logits, y, k):
     topkerror = 1 - topkaccuracy
     summ = tf.scalar_summary('top-%d Error' % k, topkerror)
     return [topkerror,summ]
-
 
 def make_instrumented_target(logits, y):
     loss = make_named_loss(logits, y)
@@ -253,7 +184,7 @@ def make_instrumented_target(logits, y):
     (vals, summaries) = zip(loss, top1err, top5err)
     return list(vals) + [tf.merge_summary(summaries)]
 
-
+train_optimizer = alexnet.optimizer(learning_rate, alexnet.loss(logits,y))
 training_eval_target = make_instrumented_target(logits, y)
 val_eval_target = make_instrumented_target(logits, y)
 val_full_validation = make_instrumented_target(logits, y)
