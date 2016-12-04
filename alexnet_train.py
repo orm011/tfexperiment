@@ -8,7 +8,8 @@ import sys
 import io
 import alexnet
 import re
-
+from tensorflow.python.client import timeline
+            
 # allow swapping in of variants
 # as long as they define model, loss and optimizer
 model = alexnet
@@ -47,6 +48,9 @@ tf.app.flags.DEFINE_string('start_from', '',
                            """if it is a <folder>, then we assume there is a `checkpoint` manifest file, and we use the most recent entry from there. 
                            if it is a <file>, we just use that directly.
                            if it is <unset>, we use random init.""")
+
+tf.app.flags.DEFINE_boolean('timeline_trace', False,
+                            """whether we should trace training runs and write their putput in Chrome timeline format""")
 
 tf.app.flags.DEFINE_integer('step_full_validation', 100000,
                             """how often to run valdation metrics on full validation set. WARNING: Seems to make the program go slower and slower over time, 
@@ -100,10 +104,6 @@ if start_from != '':
 
     print("CHECKPOINT FILE TO USE: %s" % cf)
 
-# define logger params
-summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
-summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
-summary_writer_full_validation = tf.train.SummaryWriter(LOGDIR+'/fullval_'+ ID, graph=tf.get_default_graph())
 
 # Dataset Parameters
 batch_size = 200
@@ -192,7 +192,6 @@ def tower_loss(scope, images, labels, keep_dropout):
   # each tower does its IO separately.
   # where is the batch.
   
-  
   # build inference Graph.
   logits = model.model(images, keep_dropout)
 
@@ -222,27 +221,28 @@ def average_gradients(tower_grads):
      across all towers.
   """
   average_grads = []
-  for grad_and_vars in zip(*tower_grads):
-    # Note that each grad_and_vars looks like the following:
-    #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
-    grads = []
-    for g, _ in grad_and_vars:
-      # Add 0 dimension to the gradients to represent the tower.
-      expanded_g = tf.expand_dims(g, 0)
+  with tf.name_scope('gradient_average') as scope:
+      for grad_and_vars in zip(*tower_grads):
+        # Note that each grad_and_vars looks like the following:
+        #   ((grad0_gpu0, var0_gpu0), ... , (grad0_gpuN, var0_gpuN))
+        grads = []
+        for g, _ in grad_and_vars:
+          # Add 0 dimension to the gradients to represent the tower.
+          expanded_g = tf.expand_dims(g, 0)
 
-      # Append on a 'tower' dimension which we will average over below.
-      grads.append(expanded_g)
+          # Append on a 'tower' dimension which we will average over below.
+          grads.append(expanded_g)
 
-    # Average over the 'tower' dimension.
-    grad = tf.concat(0, grads)
-    grad = tf.reduce_mean(grad, 0)
+        # Average over the 'tower' dimension.
+        grad = tf.concat(0, grads)
+        grad = tf.reduce_mean(grad, 0)
 
-    # Keep in mind that the Variables are redundant because they are shared
-    # across towers. So .. we will just return the first tower's pointer to
-    # the Variable.
-    v = grad_and_vars[0][1]
-    grad_and_var = (grad, v)
-    average_grads.append(grad_and_var)
+        # Keep in mind that the Variables are redundant because they are shared
+        # across towers. So .. we will just return the first tower's pointer to
+        # the Variable.
+        v = grad_and_vars[0][1]
+        grad_and_var = (grad, v)
+        average_grads.append(grad_and_var)
   return average_grads
 
                
@@ -251,7 +251,7 @@ def average_gradients(tower_grads):
 
 # define saver. it will include global step
 # print("run id %s" % ID)
-# print_param_sizes()
+# 
 # both the saver and print need to be done after variables are
 # created by call to alexnet
 
@@ -268,9 +268,13 @@ signal.signal(signal.SIGINT, record_signal)
 
 # start with an empty graph and make everything add stuff to it.
 with tf.Graph().as_default(), tf.device("/cpu:0"):
+    # define logger params
+    summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
+    summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
+    
     global_step = tf.get_variable('global_step', [],
                                   initializer=tf.constant_initializer(0),
-                                  trainable=False)
+                                  trainable=False, dtype=tf.int64)
 
 
     # tf Graph input placeholders for each tower
@@ -287,31 +291,51 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
 
     tower_grads = []
     opt = model.optimizer(learning_rate)
+
+    # use the same variables to construct the evaluation graph.
+    eval_logits = model.model(val_images_placeholder, keep_dropout)
+    tf.get_variable_scope().reuse_variables()
+    
     for i in range(FLAGS.num_gpus):
         with tf.device('/gpu:%d' %i ):
             # NB this is a name scope, not a variable scope.
             with tf.name_scope('%s_%d' % ("tower", i)) as scope:
-                loss = tower_loss(scope, placeholders[i]['images'], placeholders[i]['labels'], keep_dropout)
+                xs = tf.identity(placeholders[i]['images'])
+                ys = tf.identity(placeholders[i]['labels'])
+                kd = tf.identity(keep_dropout)
+                loss = tower_loss(scope, xs, ys, kd)
 
                 # stuff after here that calls get variable
                 # will reuse variables of the same name
                 # rather than make a new one
                 tf.get_variable_scope().reuse_variables()
+                # based on cifar. somehow only the last tower summaries are here
+                #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
                 grads = opt.compute_gradients(loss)
                 # which are these?
                 #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
                 tower_grads.append(grads)
 
-    
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
+    summaries = []
+
     # TODO: monitor histogram of gradients
+    # for grad,var in grads:
+    #     if grad is not None:
+    #         summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
+
+
     # TODO: add decay / track decay to model parameters?
+    
 
     # now apply merged gradients to model variables
     train_op = opt.apply_gradients(grads, global_step=global_step)
 
     # TODO: log historgram of trainable variables.
+    for var in tf.trainable_variables():
+      summaries.append(tf.histogram_summary(var.op.name, var))
+
     # not sure if I need to say 'all_variables' (ie, does that include
     # things outside the current graph)
     saver_vars = tf.all_variables()
@@ -320,16 +344,20 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     saver = tf.train.Saver()
     init = tf.initialize_all_variables() 
 
-    # use the same variables to construct the evaluation graph.
-    eval_logits = model.model(val_images_placeholder, keep_dropout)
+    # perf eval.
     metrics = performance_metrics(eval_logits, val_labels_placeholder)
     summ_train = make_summary(metrics)
     summ_eval = make_summary(metrics)
-    
+
+    print_param_sizes()
+
     # Launch the graph
     # softplacement = allow some opts to not be in the gpu if TF
     # prefers not to.
-
+    summaries.append(summ_train['summary'])
+    summary_op = tf.merge_summary(summaries)
+    # overwrite
+    summ_train['summary'] = summary_op 
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
         # Initialization
         if len(start_from)>1:
@@ -342,8 +370,16 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         step = sess.run(global_step) # usable by python code
         print("Initial step is %d" % step)
 
+        iter_start = None
         while step < FLAGS.training_iters:
-            iter_start = time.time()
+            last_iter_start = iter_start
+            iter_start  = time.time()
+            if step > 0 and step % 1 == 0:
+                print("step %d profile: load: %0.1fs. train: %0.1fs. total: %0.1fs" % (step-1,
+                                                                                       load_end - load_start,
+                                                                                       train_end - train_start,
+                                                                                       iter_start - last_iter_start))
+
             # Load a batch for each gpu.
             # TODO use the queueing ops from TF so it happens asynchronously
             batches = []
@@ -352,7 +388,6 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 images_batch, labels_batch = loader_train.next_batch(batch_size)
                 batches.append({'images':images_batch, 'labels':labels_batch})
             load_end = time.time()
-            print("Load time: ", load_end - load_start)
             
             if step % step_display == 0:
                 print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -378,6 +413,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          step=step,
                          writer=summary_writer_eval)
                 end = time.time()
+
                 print("Validation run: ", end - start)
 
             # Run optimization op (backprop)
@@ -388,29 +424,36 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 
             feed_dict[keep_dropout] = dropout
 
-            start = time.time()
-            run_metadata = tf.RunMetadata()
-            (_, step) = sess.run([train_op, global_step.assign(step+1)],
+            train_start = time.time()
+            if FLAGS.timeline_trace:
+                run_metadata = tf.RunMetadata()
+                options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+            else:
+                run_metadata = None
+                options = None
+                
+            (_, step) = sess.run([train_op, global_step],
                                 feed_dict=feed_dict,
-                                 options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-                                 run_metadata=run_metadata)
-            end = time.time()
-            print("train run: ", end - start)
-            from tensorflow.python.client import timeline
-            trace = timeline.Timeline(step_stats=run_metadata.step_stats)
-            trace_file = open('timeline_%s.ctf.json' % step, 'w')
-            trace_file.write(trace.generate_chrome_trace_format())
+                                options=options,
+                                run_metadata=run_metadata)
+            
+            train_end = time.time()
 
+            if FLAGS.timeline_trace:
+                trace = timeline.Timeline(step_stats=run_metadata.step_stats)
+                trace_file = open('timeline_%s.ctf.json' % step, 'w')
+                trace_file.write(trace.generate_chrome_trace_format())
+            
             # Checkpoint
             if ctrlc_received or (step % step_save == 0) or (step == FLAGS.training_iters):
                 print("Saving model as of before step %d..." %(step))
-                #saver.save(sess, path_save, global_step=step)
+                saver.save(sess, path_save, global_step=step)
                 print("Model saved.")
                 if ctrlc_received:
                     print("Exiting after Ctrl+C")
                     os.kill(os.getpid(), signal.SIGINT)
-            iter_end = time.time()
-            print("iteration time: ", iter_end - iter_start)
+
+
 
         print("Optimization Finished!")
 
