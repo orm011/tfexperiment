@@ -4,30 +4,71 @@ import tensorflow as tf
 import sys
 import io
 
+FLAGS = tf.app.flags.FLAGS
+
+#TODO try fp16
+#tf.app.flags.DEFINE_boolean('use_fp16', False,
+#                            """Train the model using fp16.""")
+
+# adapted from CIFAR-10 example
+# does two main  things:
+# -forces variable to be on CPU
+# (we use the CPU to synchronize gpu state after each batch)
+# -allows multiple model replicas to share same variable instances. 
+# (this is needed for communication)
+def _cpu_var(name, shape, initializer):
+    """Helper to create a Variable stored on CPU memory.
+  Args:
+    name: name of the variable
+    shape: list of ints
+    initializer: initializer for Variable
+
+  Returns:
+    Variable Tensor
+  """
+    with tf.device('/cpu:0'):
+        #dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
+        var = tf.get_variable(name, shape, initializer=initializer)
+    return var
+
+def _normal_cpu_var(name, shape):
+    total = 1
+    for i in shape[:-1]:
+        total *= i
+    # eg shape is [11,11,3,96] => total = 11*11*3
+    
+    stddev = np.sqrt(2./total)
+    # TODO: use tf.truncated_normal_initializer
+    initializer = tf.random_normal_initializer(stddev=stddev, dtype=tf.float32)
+    return _cpu_var(name, shape, initializer)
+
+def _zero_cpu_var(name, shape):
+    initializer = tf.constant_initializer(dtype=tf.float32) #zeros
+    return _cpu_var(name, shape, initializer)
 
 def model(x, keep_dropout):
     weights = {
-        'wc1': tf.Variable(tf.random_normal([11, 11, 3, 96], stddev=np.sqrt(2./(11*11*3)))),
-        'wc2': tf.Variable(tf.random_normal([5, 5, 96, 256], stddev=np.sqrt(2./(5*5*96)))),
-        'wc3': tf.Variable(tf.random_normal([3, 3, 256, 384], stddev=np.sqrt(2./(3*3*256)))),
-        'wc4': tf.Variable(tf.random_normal([3, 3, 384, 256], stddev=np.sqrt(2./(3*3*384)))),
-        'wc5': tf.Variable(tf.random_normal([3, 3, 256, 256], stddev=np.sqrt(2./(3*3*256)))),
+        'wc1': _normal_cpu_var('wc1', [11, 11, 3, 96]),
+        'wc2': _normal_cpu_var('wc2', [5, 5, 96, 256]),
+        'wc3': _normal_cpu_var('wc3', [3, 3, 256, 384]),
+        'wc4': _normal_cpu_var('wc4', [3, 3, 384, 256]),
+        'wc5': _normal_cpu_var('wc5', [3, 3, 256, 256]),
 
-        'wf6': tf.Variable(tf.random_normal([7*7*256, 4096], stddev=np.sqrt(2./(7*7*256)))),
-        'wf7': tf.Variable(tf.random_normal([4096, 4096], stddev=np.sqrt(2./4096))),
-        'wo': tf.Variable(tf.random_normal([4096, 100], stddev=np.sqrt(2./4096)))
+        'wf6': _normal_cpu_var('wf6', [7*7*256, 4096]),
+        'wf7': _normal_cpu_var('wf7', [4096, 4096]),
+        'wo': _normal_cpu_var('wo', [4096, 100])
     }
 
     biases = {
-        'bc1': tf.Variable(tf.zeros(96)),
-        'bc2': tf.Variable(tf.zeros(256)),
-        'bc3': tf.Variable(tf.zeros(384)),
-        'bc4': tf.Variable(tf.zeros(256)),
-        'bc5': tf.Variable(tf.zeros(256)),
+        'bc1': _zero_cpu_var('bc1', [96]),
+        'bc2': _zero_cpu_var('bc2', [256]),
+        'bc3': _zero_cpu_var('bc3', [384]),
+        'bc4': _zero_cpu_var('bc4', [256]),
+        'bc5': _zero_cpu_var('bc5', [256]),
 
-        'bf6': tf.Variable(tf.ones(4096)),
-        'bf7': tf.Variable(tf.ones(4096)),
-        'bo': tf.Variable(tf.ones(100))
+        'bf6': _zero_cpu_var('bf6', [4096]),
+        'bf7': _zero_cpu_var('bf7', [4096]),
+        'bo': _zero_cpu_var('bo', [100])
     }
 
     # Conv + ReLU + LRN + Pool, 224->55->27
@@ -71,12 +112,12 @@ def model(x, keep_dropout):
     
     return out
 
-
+#TODO: make loss depend also on parameters?
 def loss(logits, y):
     loss = tf.reduce_mean(
         tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
     return loss
 
 
-def optimizer(learning_rate, loss):
-    return tf.train.AdamOptimizer(learning_rate=learning_rate).minimize(loss)
+def optimizer(learning_rate):
+    return tf.train.AdamOptimizer(learning_rate=learning_rate)
