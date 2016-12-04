@@ -343,16 +343,20 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         print("Initial step is %d" % step)
 
         while step < FLAGS.training_iters:
+            iter_start = time.time()
             # Load a batch for each gpu.
             # TODO use the queueing ops from TF so it happens asynchronously
             batches = []
+            load_start = time.time()
             for i in range(FLAGS.num_gpus):
                 images_batch, labels_batch = loader_train.next_batch(batch_size)
                 batches.append({'images':images_batch, 'labels':labels_batch})
-                
+            load_end = time.time()
+            print("Load time: ", load_end - load_start)
+            
             if step % step_display == 0:
                 print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-
+                start = time.time()
                 def run_test(target, feed_dict, name, step, writer):
                     res = sess.run(target, feed_dict=feed_dict)
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
@@ -373,6 +377,8 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          name='Validation',
                          step=step,
                          writer=summary_writer_eval)
+                end = time.time()
+                print("Validation run: ", end - start)
 
             # Run optimization op (backprop)
             feed_dict = {}
@@ -381,9 +387,19 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 feed_dict[placeholders[i]['labels']] = batches[i]['labels']
                 
             feed_dict[keep_dropout] = dropout
-            
+
+            start = time.time()
+            run_metadata = tf.RunMetadata()
             (_, step) = sess.run([train_op, global_step.assign(step+1)],
-                                  feed_dict=feed_dict)
+                                feed_dict=feed_dict,
+                                 options=tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
+                                 run_metadata=run_metadata)
+            end = time.time()
+            print("train run: ", end - start)
+            from tensorflow.python.client import timeline
+            trace = timeline.Timeline(step_stats=run_metadata.step_stats)
+            trace_file = open('timeline_%s.ctf.json' % step, 'w')
+            trace_file.write(trace.generate_chrome_trace_format())
 
             # Checkpoint
             if ctrlc_received or (step % step_save == 0) or (step == FLAGS.training_iters):
@@ -393,6 +409,8 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 if ctrlc_received:
                     print("Exiting after Ctrl+C")
                     os.kill(os.getpid(), signal.SIGINT)
+            iter_end = time.time()
+            print("iteration time: ", iter_end - iter_start)
 
         print("Optimization Finished!")
 
