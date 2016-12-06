@@ -180,7 +180,7 @@ def performance_metrics(logits, y):
 
 # (orm: adapted from the CIFAR-10 example in tensorflow.)
 # a tower is a version of the model, including loss, that will run on a single gpu
-def tower_loss(scope, images, labels, keep_dropout):
+def tower_loss(scope, images, labels, keep_dropout, scope_name):
   """Calculate the total loss on a single model.
 
   Args:
@@ -192,8 +192,8 @@ def tower_loss(scope, images, labels, keep_dropout):
   # each tower does its IO separately.
   # where is the batch.
   
-  # build inference Graph.
-  logits = model.model(images, keep_dropout)
+  # build inference Graph for training
+  logits = model.model_train(images, keep_dropout, local_scope_name=scope_name)
 
   # get loss.
   total_loss = model.loss(logits, labels) 
@@ -245,7 +245,35 @@ def average_gradients(tower_grads):
         average_grads.append(grad_and_var)
   return average_grads
 
-               
+# def prep_example(example):
+#     image_raw = example.features.feature['image_raw'].bytes_list.value[0]
+#     height = example.features.feature['height'].int64_list.value
+#     shape = [f['height'][0], f['width'][0], f['depth'][0]]
+#     tf.constant(f['image_raw'][0])
+
+# def read_input(filename_queue):
+#     reader = tf.TFRecordReader()
+#     key, record_string = reader.read(filename_queue)
+#     example, label = tf.parse_example(record_string)
+#     processed_example = prep_example(example)
+#     return processed_example, label
+
+# def input_pipeline(filenames, batch_size, num_epochs=None):
+#     filename_queue = tf.train.string_input_producer(
+#         filenames, num_epochs=num_epochs, shuffle=True)
+#     example, label = read_my_file_format(filename_queue)
+#     # min_after_dequeue defines how big a buffer we will randomly sample
+#     #   from -- bigger means better shuffling but slower start up and more
+#     #   memory used.
+#     # capacity must be larger than min_after_dequeue and the amount larger
+#     #   determines the maximum we will prefetch.  Recommendation:
+#     #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
+#     min_after_dequeue = 10000
+#     capacity = min_after_dequeue + 3 * batch_size
+#     example_batch, label_batch = tf.train.shuffle_batch(
+#     [example, label], batch_size=batch_size, capacity=capacity,
+#     min_after_dequeue=min_after_dequeue)
+#     return example_batch, label_batch
     
 # Construct model
 
@@ -292,10 +320,6 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     tower_grads = []
     opt = model.optimizer(learning_rate)
 
-    # use the same variables to construct the evaluation graph.
-    eval_logits = model.model(val_images_placeholder, keep_dropout)
-    tf.get_variable_scope().reuse_variables()
-    
     for i in range(FLAGS.num_gpus):
         with tf.device('/gpu:%d' %i ):
             # NB this is a name scope, not a variable scope.
@@ -303,7 +327,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 xs = tf.identity(placeholders[i]['images'])
                 ys = tf.identity(placeholders[i]['labels'])
                 kd = tf.identity(keep_dropout)
-                loss = tower_loss(scope, xs, ys, kd)
+                loss = tower_loss(scope, xs, ys, kd, scope)
 
                 # stuff after here that calls get variable
                 # will reuse variables of the same name
@@ -315,6 +339,12 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 # which are these?
                 #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
                 tower_grads.append(grads)
+
+
+    # use the same variables to construct the evaluation graph.
+    # note. runnable model must be constructed after training ones for now
+    eval_logits = model.model_run(val_images_placeholder, local_scope_name='eval')
+
 
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
@@ -340,7 +370,9 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     # things outside the current graph)
     saver_vars = tf.all_variables()
     saver_dict = dict(map(lambda v: (v.name, v.dtype), saver_vars))
-    print(saver_dict)
+    for (k,v) in saver_dict.items():
+        print(k, v)
+
     saver = tf.train.Saver()
     init = tf.initialize_all_variables() 
 
@@ -456,31 +488,3 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
 
 
         print("Optimization Finished!")
-
-        # def full_validation():
-        #     # Evaluate on the whole validation set
-        #     print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        #     print('Evaluation on the whole validation_set at step %d...' % step)
-        #     # (orm) added + batch_size - 1 to make this work with small validation sets (and give 1)
-        #     num_batch = (loader_val.size() + batch_size - 1) // batch_size
-        #     err1_total = 0.
-        #     err5_total = 0.
-        #     loader_val.reset()
-        #     for i in range(num_batch):
-        #         images_batch, labels_batch = loader_val.next_batch(batch_size)    
-        #         (_, err1, err5, _) = sess.run(val_full_validation, feed_dict={x: images_batch, y: labels_batch, keep_dropout: 1.})
-        #         err1_total += err1
-        #         err5_total += err5
-
-        #     err1_total /= num_batch
-        #     err5_total /= num_batch
-
-        #     # need to run this code just for logging into the tensorboard stuff
-        #     top1error = tf.scalar_summary('top-%d Error' % 1, tf.constant(err1_total))
-        #     top5error = tf.scalar_summary('top-%d Error' % 5, tf.constant(err5_total))
-        #     sums = tf.merge_summary([top1error, top5error])
-        #     fullvalsummary = sess.run(sums)
-        #     summary_writer_full_validation.add_summary(fullvalsummary, step)
-
-        #     print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-        #     print('Evaluation Finished! Error Top1 = ' + "{:.4f}".format(err1_total) + ", Top5 = " + "{:.4f}".format(err5_total))
