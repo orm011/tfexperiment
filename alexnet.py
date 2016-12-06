@@ -97,9 +97,8 @@ def batch_normalization(layer, is_training, scale_init, local_scope_name):
         (batch_mean, batch_variance) = tf.nn.moments(layer, axes)
         ema = tf.train.ExponentialMovingAverage(decay=0.9999)
 
-        #print(bn_vars['mean'], batch_mean)
-        update_mean = tf.assign(bn_vars['mean'], batch_mean)
-        update_variance = tf.assign(bn_vars['variance'], batch_variance)
+        update_mean = tf.assign(bn_vars['mean'], batch_mean, name='assign_mean')
+        update_variance = tf.assign(bn_vars['variance'], batch_variancen, 'assign_variance')
 
         # want to update batch average before computing exponential avg on it
         update_exp_avg_op = ema.apply([update_mean, update_variance])
@@ -217,7 +216,7 @@ def _model(x, keep_dropout, is_training, local_scope_name):
     # then, the next layer will be harder to train.
     # but the next layer is not being trained here, so leaving it
     # unnormalized
-    out = tf.add(tf.matmul(fc7, weights['wo']), biases['bo'])
+    out = tf.add(tf.matmul(fc7, weights['wo']), biases['bo'], name='logits_out')
     return out
 
 def model_train(x, keep_dropout, local_scope_name):
