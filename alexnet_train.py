@@ -254,8 +254,14 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
         print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         print('Evaluation Finished! Error Top1 = ' + "{:.4f}".format(err1_total) + ", Top5 = " + "{:.4f}".format(err5_total))
 
-    
+
+    start_time = None
     while step < training_iters:
+        prev_time = start_time
+        start_time = time.time()
+        if (step > 0):
+            print("iter time: %.2f. train time: %.2f. load time %.2f" %(start_time - prev_time, after_train - before_train, after_load - before_load))
+            
         if ctrlc_received or (step > 0 and step % step_save == 0):
             saver.save(sess, path_save, global_step=step)
             print("Model saved as of before step %d !" %(step))
@@ -263,7 +269,10 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
                 os.kill(os.getpid(), signal.SIGINT)
         
         # Load a batch of training data
+        before_load = time.time()
         images_batch, labels_batch = loader_train.next_batch(batch_size)
+        after_load = time.time()
+        
         
         if step % step_display == 0:
             print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
@@ -289,8 +298,11 @@ with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_plac
             full_validation()
                         
         # Run optimization op (backprop)
+        before_train = time.time()
         sess.run(train_optimizer, feed_dict={x: images_batch, y: labels_batch, keep_dropout: dropout})
         step = sess.run(global_step.assign(step + 1))
+        after_train = time.time()
+                
 
             
     saver.save(sess, path_save, global_step=step)
