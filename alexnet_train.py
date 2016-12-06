@@ -406,7 +406,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         while step < FLAGS.training_iters:
             last_iter_start = iter_start
             iter_start  = time.time()
-            if step > 0 and step % 1 == 0:
+            if step > 0 and step % 13 == 0:
                 print("step %d profile: load: %0.1fs. train: %0.1fs. total: %0.1fs" % (step-1,
                                                                                        load_end - load_start,
                                                                                        train_end - train_start,
