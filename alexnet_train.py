@@ -113,7 +113,7 @@ c = 3
 data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842])
 
 # Training Parameters
-learning_rate = 0.001
+learning_rate = 0.008
 dropout = 0.5 # Dropout, probability to keep units
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
@@ -438,7 +438,8 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          step=step,
                          writer=summary_writer_train)
 
-                images_batch_val, labels_batch_val = loader_val.next_batch(batch_size)    
+                # run val on larger batches to denoise print output a bit?
+                images_batch_val, labels_batch_val = loader_val.next_batch(4*batch_size)    
                 run_test(summ_eval,
                          feed_dict={val_images_placeholder: images_batch_val, val_labels_placeholder: labels_batch_val, keep_dropout: 1.},
                          name='Validation',
