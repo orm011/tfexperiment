@@ -98,7 +98,7 @@ def batch_normalization(layer, is_training, scale_init, local_scope_name):
         ema = tf.train.ExponentialMovingAverage(decay=0.9999)
 
         update_mean = tf.assign(bn_vars['mean'], batch_mean, name='assign_mean')
-        update_variance = tf.assign(bn_vars['variance'], batch_variancen, 'assign_variance')
+        update_variance = tf.assign(bn_vars['variance'], batch_variance, name='assign_variance')
 
         # want to update batch average before computing exponential avg on it
         update_exp_avg_op = ema.apply([update_mean, update_variance])
