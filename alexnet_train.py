@@ -445,8 +445,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          step=step,
                          writer=summary_writer_eval)
                 end = time.time()
-
-                print("Validation run: ", end - start)
+                print("Validation run took %.1f seconds" %( end - start))
 
             # Run optimization op (backprop)
             feed_dict = {}
