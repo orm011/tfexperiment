@@ -154,34 +154,39 @@ def _model(x, keep_dropout, is_training, local_scope_name):
 
     # Conv + ReLU, 13-> 13
     with tf.variable_scope('conv3') as scope:
-        conv3 = tf.nn.conv2d(pool2, weights['wc3'], strides=[1, 1, 1, 1], padding='SAME')
-        conv3 = batch_normalization(conv3, is_training, scale_init=stddev_for_shape(weights['wc3'].get_shape()), local_scope_name=(local_scope_name, scope))
+        w =  _normal_cpu_var('weights', [3, 3, 256, 384])
+        conv3 = tf.nn.conv2d(pool2, w, strides=[1, 1, 1, 1], padding='SAME')
+        conv3 = batch_normalization(conv3, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
         conv3 = tf.nn.relu(conv3)
 
     # Conv + ReLU, 13-> 13
     with tf.variable_scope('conv4') as scope:
-        conv4 = tf.nn.conv2d(conv3, weights['wc4'], strides=[1, 1, 1, 1], padding='SAME')
-        conv4 = batch_normalization(conv4, is_training, scale_init=stddev_for_shape(weights['wc4'].get_shape()), local_scope_name=(local_scope_name, scope))
+        w =  _normal_cpu_var('weights', [3, 3, 384, 256])
+        conv4 = tf.nn.conv2d(conv3, w, strides=[1, 1, 1, 1], padding='SAME')
+        conv4 = batch_normalization(conv4, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
         conv4 = tf.nn.relu(conv4)
 
     # Conv + ReLU + Pool, 13->6
     with tf.variable_scope('conv5') as scope:
-        conv5 = tf.nn.conv2d(conv4, weights['wc5'], strides=[1, 1, 1, 1], padding='SAME')
-        conv5 = batch_normalization(conv5, is_training, scale_init=stddev_for_shape(weights['wc5'].get_shape()), local_scope_name=(local_scope_name, scope))
+        w = _normal_cpu_var('weights', [3, 3, 256, 256])
+        conv5 = tf.nn.conv2d(conv4, w, strides=[1, 1, 1, 1], padding='SAME')
+        conv5 = batch_normalization(conv5, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
         conv5 = tf.nn.relu(conv5)
         pool5 = tf.nn.max_pool(conv5, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
         
     # FC + ReLU + Dropout
     with tf.variable_scope('fc6') as scope:
-        fc6 = tf.reshape(pool5, [-1, weights['wf6'].get_shape().as_list()[0]])
-        fc6 = tf.matmul(fc6, weights['wf6']) # remove bias
+        w =  _normal_cpu_var('weights', [7*7*256, 4096])
+        fc6 = tf.reshape(pool5, [-1, w.get_shape().as_list()[0]])
+        fc6 = tf.matmul(fc6, w)
         fc6 = batch_normalization(fc6, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         fc6 = tf.nn.relu(fc6)
         fc6 = tf.nn.dropout(fc6, keep_dropout)
     
     # FC + ReLU + Dropout
     with tf.variable_scope('fc7') as scope:
-        fc7 = tf.matmul(fc6, weights['wf7'])
+        w =  _normal_cpu_var('weights', [4096, 4096])
+        fc7 = tf.matmul(fc6, w)
         fc7 = batch_normalization(fc7, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
         fc7 = tf.nn.relu(fc7)
         fc7 = tf.nn.dropout(fc7, keep_dropout)
@@ -192,7 +197,12 @@ def _model(x, keep_dropout, is_training, local_scope_name):
     # then, the next layer will be harder to train.
     # but the next layer is not being trained here, so leaving it
     # unnormalized
-    out = tf.add(tf.matmul(fc7, weights['wo']), biases['bo'], name='logits_out')
+    with tf.variable_scope('output') as scope:
+        w =  _normal_cpu_var('weights', [4096, 100])
+        bo =  _zero_cpu_var('bias', [100])
+        # keep the logits name as is (used to look up model op)
+        out = tf.add(tf.matmul(fc7, w), bo, name='logits')
+        
     return out
 
 def model_train(x, keep_dropout, local_scope_name):
