@@ -9,7 +9,11 @@ import io
 import alexnet
 import re
 from tensorflow.python.client import timeline
-            
+from collections import namedtuple
+
+
+
+
 # allow swapping in of variants
 # as long as they define model, loss and optimizer
 model = alexnet
@@ -104,17 +108,27 @@ if start_from != '':
 
     print("CHECKPOINT FILE TO USE: %s" % cf)
 
+Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batches')
 
 # Dataset Parameters
-batch_size = 200
-load_size = 256
-fine_size = 224
-c = 3
-data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842])
-
 # Training Parameters
-learning_rate = 0.001
-dropout = 0.5 # Dropout, probability to keep units
+# Add them here so we can print them all out to logs (helps to see if we changed them).
+PARAMS = Params(
+    batch_size = 200,
+    load_size = 256,
+    fine_size = 224,
+    c = 3,
+    data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842]),
+    initial_learning_rate = 0.003 ,
+    decay_rate = 0.85, # by 5k iters, (10 times epoch) it is 0.0005. by 10k, it is 0.0001.
+    dropout = 0.5, # Dropout, probability to keep units
+    num_images = 100000, # hardcoded for now.
+    grid_x = 10, # for showing eval batches in tensorboard
+    eval_batches = 5 # number of batches to use for evaluation
+)
+
+print(PARAMS)
+
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
 
@@ -141,18 +155,18 @@ opt_data_train = {
     'data_h5': 'miniplaces_256_train.h5',
     #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
     #'data_list': 'YOURPATH/train.txt', # MODIFY PATH ACCORDINGLY
-    'load_size': load_size,
-    'fine_size': fine_size,
-    'data_mean': data_mean,
+    'load_size': PARAMS.load_size,
+    'fine_size': PARAMS.fine_size,
+    'data_mean': PARAMS.data_mean,
     'randomize': True
     }
 opt_data_val = {
     'data_h5': 'miniplaces_256_val.h5',
     #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
     #'data_list': 'YOURPATH/val.txt',   # MODIFY PATH ACCORDINGLY
-    'load_size': load_size,
-    'fine_size': fine_size,
-    'data_mean': data_mean,
+    'load_size': PARAMS.load_size,
+    'fine_size': PARAMS.fine_size,
+    'data_mean': PARAMS.data_mean,
     'randomize': False
     }
 
@@ -212,7 +226,11 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1, expand_factor=4):
     
     # scale to [0, 255] and convert to uint8
     prelim =  tf.image.convert_image_dtype(x7, dtype = tf.uint8)
-    new_sizes = [int(dim_sz) * expand_factor for dim_sz in prelim.get_shape()[1:3]]
+    if expand_factor > 0:
+        new_sizes = [int(dim_sz) * expand_factor for dim_sz in prelim.get_shape()[1:3]]
+    else:
+        new_sizes = [int(dim_sz) // expand_factor for dim_sz in prelim.get_shape()[1:3]]
+
     return tf.image.resize_images(prelim, size=new_sizes)
 
 def make_summary(mets):
@@ -358,10 +376,12 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                                   initializer=tf.constant_initializer(0),
                                   trainable=False, dtype=tf.int64)
 
+    learning_rate = tf.train.exponential_decay(PARAMS.initial_learning_rate, global_step, PARAMS.num_images//PARAMS.batch_size, PARAMS.decay_rate, staircase=True)
+
 
     # tf Graph input placeholders for each tower
     def input_placeholder(name):
-        return (name, {'images':tf.placeholder(tf.float32, [None, fine_size, fine_size, c]), 'labels':tf.placeholder(tf.int64, None)})
+        return (name, {'images':tf.placeholder(tf.float32, [None, PARAMS.fine_size, PARAMS.fine_size, PARAMS.c]), 'labels':tf.placeholder(tf.int64, None)})
     
     placeholders = dict([input_placeholder(n) for n in range(FLAGS.num_gpus)])
 
@@ -403,20 +423,22 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         grid_y = 8   # to get a square grid for 64 conv1 features
         grid = put_kernels_on_grid (weights, grid_y, grid_x)
         conv_summary = tf.image_summary('conv1/features', grid, max_images=1)
-                  
+    
     # use the same variables to construct the evaluation graph.
     # note. runnable model must be constructed after training ones for now
     eval_logits = model.model_run(val_images_placeholder, local_scope_name='eval')
 
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
-    summaries = [conv_summary]
+    lrsum = tf.scalar_summary('learning_rate', learning_rate)
+    
+    summaries = [conv_summary, lrsum]
 
-    # TODO: monitor histogram of gradients
-    # for grad,var in grads:
-    #     if grad is not None:
-    #         summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
-
+    #TODO: monitor histogram of gradients
+    # right now complains about placeholders
+    #for grad,var in grads:
+     #   if grad is not None:
+      #      summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
 
     # TODO: add decay / track decay to model parameters?
     
@@ -479,21 +501,27 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
             batches = []
             load_start = time.time()
             for i in range(FLAGS.num_gpus):
-                images_batch, labels_batch = loader_train.next_batch(batch_size)
+                images_batch, labels_batch = loader_train.next_batch(PARAMS.batch_size)
                 batches.append({'images':images_batch, 'labels':labels_batch})
             load_end = time.time()
             
             if step % step_display == 0:
+                
                 print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 start = time.time()
                 def run_test(target, feed_dict, name, step, writer):
+                    # assert(PARAMS.batch_size % PARAMS.grid_x == 0)
+                    input_summary = tf.image_summary('input/batch',
+                                                      feed_dict[val_images_placeholder], max_images=4)
+                    target['inputs'] = input_summary
                     res = sess.run(target, feed_dict=feed_dict)
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
                       "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
                       "{:.2f}".format(res['top1err']) + ", Top5 = " + \
                       "{:.2f}".format(res['top5err']))
                     writer.add_summary(res['summary'], step)
-
+                    writer.add_summary(res['inputs'], step)
+                    
                 run_test(summ_train,
                          feed_dict={val_images_placeholder: batches[0]['images'], val_labels_placeholder: batches[0]['labels'], keep_dropout: 1.},
                          name='Training',
@@ -501,7 +529,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          writer=summary_writer_train)
 
                 # run val on larger batches to denoise print output a bit?
-                images_batch_val, labels_batch_val = loader_val.next_batch(4*batch_size)    
+                images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)    
                 run_test(summ_eval,
                          feed_dict={val_images_placeholder: images_batch_val, val_labels_placeholder: labels_batch_val, keep_dropout: 1.},
                          name='Validation',
@@ -516,7 +544,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 feed_dict[placeholders[i]['images']] = batches[i]['images']
                 feed_dict[placeholders[i]['labels']] = batches[i]['labels']
                 
-            feed_dict[keep_dropout] = dropout
+            feed_dict[keep_dropout] = PARAMS.dropout
 
             train_start = time.time()
             if FLAGS.timeline_trace:

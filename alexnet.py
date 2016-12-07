@@ -130,6 +130,7 @@ def batch_normalization(layer, is_training, scale_init, local_scope_name):
 ## after adding batch normalization.
 ## even though they share the same trained variables.
 def _model(x, keep_dropout, is_training, local_scope_name):
+    
     # Conv + ReLU + LRN + Pool, 224->55->27
     with tf.variable_scope('conv1') as scope:
         w = _normal_cpu_var('weights', [11, 11, 3, 96])
