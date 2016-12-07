@@ -130,35 +130,12 @@ def batch_normalization(layer, is_training, scale_init, local_scope_name):
 ## after adding batch normalization.
 ## even though they share the same trained variables.
 def _model(x, keep_dropout, is_training, local_scope_name):
-
-    # these variables will be defined in the enclosing scope.
-    weights = {
-        'wc3': _normal_cpu_var('wc3', [3, 3, 256, 384]),
-        'wc4': _normal_cpu_var('wc4', [3, 3, 384, 256]),
-        'wc5': _normal_cpu_var('wc5', [3, 3, 256, 256]),
-
-        'wf6': _normal_cpu_var('wf6', [7*7*256, 4096]),
-        'wf7': _normal_cpu_var('wf7', [4096, 4096]),
-        'wo': _normal_cpu_var('wo', [4096, 100])
-    }
-    # bias term gets superseded by offset term of batch norm.
-    # (see paper)
-    biases = {
-        # 'bc1': _zero_cpu_var('bc1', [96]),
-        # 'bc2': _zero_cpu_var('bc2', [256]),
-        # 'bc3': _zero_cpu_var('bc3', [384]),
-        # 'bc4': _zero_cpu_var('bc4', [256]),
-        # 'bc5': _zero_cpu_var('bc5', [256]),
-
-        # 'bf6': _zero_cpu_var('bf6', [4096]),
-        # 'bf7': _zero_cpu_var('bf7', [4096]),
-        'bo': _zero_cpu_var('bo', [100])
-    }
-
     # Conv + ReLU + LRN + Pool, 224->55->27
     with tf.variable_scope('conv1') as scope:
         w = _normal_cpu_var('weights', [11, 11, 3, 96])
         conv1 = tf.nn.conv2d(x, w, strides=[1, 4, 4, 1], padding='SAME')
+
+        # note: bias term gets superseded internal offset of batch norm.
         conv1 = batch_normalization(conv1, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
         conv1 = tf.nn.relu(conv1)
         lrn1 = tf.nn.local_response_normalization(conv1, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)

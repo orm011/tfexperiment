@@ -167,7 +167,7 @@ loader_val = DataLoaderH5(**opt_data_val)
 # this way, we can see all of them (rather than only a couple)
 # gotten from https://gist.github.com/kukuruza/03731dc494603ceab0c5
 # on a comment "kitovyj commented on Sep 21 • edited"
-def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1):
+def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1, expand_factor=4):
     '''Visualize conv. features as an image (mostly for the 1st layer).
     Place kernel into a grid, with some paddings between adjacent filters.
 
@@ -176,7 +176,6 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1):
       (grid_Y, grid_X):  shape of the grid. Require: NumKernels == grid_Y * grid_X
                            User is responsible of how to break into two multiples.
       pad:               number of black pixels around each filter (between them)
-
     Return:
       Tensor of shape [(Y+2*pad)*grid_Y, (X+2*pad)*grid_X, NumChannels, 1].
     '''
@@ -212,7 +211,9 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1):
     x7 = tf.transpose(x6, (3, 0, 1, 2))
     
     # scale to [0, 255] and convert to uint8
-    return tf.image.convert_image_dtype(x7, dtype = tf.uint8) 
+    prelim =  tf.image.convert_image_dtype(x7, dtype = tf.uint8)
+    new_sizes = [int(dim_sz) * expand_factor for dim_sz in prelim.get_shape()[1:3]]
+    return tf.image.resize_images(prelim, size=new_sizes)
 
 def make_summary(mets):
     summaries = []
