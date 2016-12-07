@@ -157,22 +157,24 @@ def _model(x, keep_dropout, is_training, local_scope_name):
         'bo': _zero_cpu_var('bo', [100])
     }
 
-    # (orm: removed LRN. batch norm paper says not needed with BN)
-    # (orm: removed dropout. batch norm paper also says not needed with BN)
-    # Conv + ReLU + Pool, 224->55->27
+    # Conv + ReLU + LRN + Pool, 224->55->27
     with tf.variable_scope('conv1') as scope:
         conv1 = tf.nn.conv2d(x, weights['wc1'], strides=[1, 4, 4, 1], padding='SAME')
         conv1 = batch_normalization(conv1, is_training, scale_init=stddev_for_shape(weights['wc1'].get_shape()), local_scope_name=(local_scope_name, scope))
         conv1 = tf.nn.relu(conv1)
-        pool1 = tf.nn.max_pool(conv1, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
+        lrn1 = tf.nn.local_response_normalization(conv1, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
+
+        pool1 = tf.nn.max_pool(lrn1, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
 
     
-    # Conv + ReLU + Pool, 27-> 13
+    # Conv + ReLU + LRN + Pool, 27-> 13
     with tf.variable_scope('conv2') as scope:
         conv2 = tf.nn.conv2d(pool1, weights['wc2'], strides=[1, 1, 1, 1], padding='SAME')
         conv2 = batch_normalization(conv2, is_training, scale_init=stddev_for_shape(weights['wc2'].get_shape()), local_scope_name=(local_scope_name, scope))
         conv2 = tf.nn.relu(conv2)
-        pool2 = tf.nn.max_pool(conv2, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
+        lrn2 = tf.nn.local_response_normalization(conv2, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
+
+        pool2 = tf.nn.max_pool(lrn2, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
 
     # Conv + ReLU, 13-> 13
     with tf.variable_scope('conv3') as scope:
