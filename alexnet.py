@@ -199,12 +199,14 @@ def _model(x, keep_dropout, is_training, local_scope_name):
         fc6 = tf.matmul(fc6, weights['wf6']) # remove bias
         fc6 = batch_normalization(fc6, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         fc6 = tf.nn.relu(fc6)
+        fc6 = tf.nn.dropout(fc6, keep_dropout)
     
     # FC + ReLU + Dropout
     with tf.variable_scope('fc7') as scope:
         fc7 = tf.matmul(fc6, weights['wf7'])
         fc7 = batch_normalization(fc7, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
         fc7 = tf.nn.relu(fc7)
+        fc7 = tf.nn.dropout(fc7, keep_dropout)
 
     # Output FC
     # should we batch normalize this?
