@@ -113,7 +113,7 @@ c = 3
 data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842])
 
 # Training Parameters
-learning_rate = 0.008
+learning_rate = 0.001
 dropout = 0.5 # Dropout, probability to keep units
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
