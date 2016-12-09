@@ -3,12 +3,31 @@ import numpy as np
 import tensorflow as tf
 import sys
 import io
+from common import *
 
 FLAGS = tf.app.flags.FLAGS
 
 #TODO try fp16
+#I would like to monitor gradients etc before going this route (make sure you see if something is wrong)
 #tf.app.flags.DEFINE_boolean('use_fp16', False,
 #                            """Train the model using fp16.""")
+
+
+# TODOs:
+# filters are still looking terrible.
+#
+# other todos:
+# fix batch norm batches to use the eponential average at runtime
+# try out exponential averaging of the variables themselve
+#   (akin to taking several models and averaging them)
+# 
+# regularization rate for conv filters. bad at 0.001 (becomes 0) should it be something though?
+# truncated normal initialization (avoids extreme initial examples)
+# initial stddev for scaling weight initialization: what should it be. book :
+#     1/sqrt(#inputs) (avoids sum adding to large value). currently 2/sqrt(#inputs).
+#    Sum(w*xi) for xi being 1 and 0, with w being normally dist -> variance is num(xi)*var(w)
+# initial biases: alexnet initializes with biases of 1 in some cases, to make relu more likely to get non-zero inputs.
+# 
 
 # adapted from CIFAR-10 example
 # does two main  things:
@@ -16,7 +35,7 @@ FLAGS = tf.app.flags.FLAGS
 # (we use the CPU to synchronize gpu state after each batch)
 # -allows multiple model replicas to share same variable instances. 
 # (this is needed for communication)
-def _cpu_var(name, shape, initializer):
+def _cpu_var(name, shape, initializer, wd=None):
     """Helper to create a Variable stored on CPU memory.
   Args:
     name: name of the variable
@@ -29,98 +48,112 @@ def _cpu_var(name, shape, initializer):
     with tf.device('/cpu:0'):
         #dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
         var = tf.get_variable(name, shape, initializer=initializer)
+
+    if wd != None:
+        weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name=name + '_weight_loss')
+        tf.add_to_collection('losses', weight_decay)
+        
     return var
 
+# scales the std dev so that the
+# sum of all input fields to our filter
+# is not too large or too small.
+# see http://neuralnetworksanddeeplearning.com/chap3.html#weight_initialization
+# for an explanation
+# (the initial code was already set by the TA)
 def stddev_for_shape(shape):
     total = 1
     for i in shape[:-1]:
         total *= int(i)
     # eg shape is [11,11,3,96] => total = 11*11*3
+    # this is the number of input activations for this kernel.
     
-    stddev = np.sqrt(2./total) # (variance = 2. / total = E[X^2] )
+    stddev = np.sqrt(1./total) # (variance = 1. / E[input dist] * total inputs )
     return stddev
 
-
-def _normal_cpu_var(name, shape):
+def _normal_regularized_cpu_var(name, shape, wd, mean=0.0, stddev=None):
     # TODO: use tf.truncated_normal_initializer
-    initializer = tf.random_normal_initializer(stddev=stddev_for_shape(shape),
-                                               dtype=tf.float32)
-    return _cpu_var(name, shape, initializer)
+    if stddev == None:
+        stddev = stddev_for_shape(shape)
+        
+    print("Normal variable %s: mean %.3f. stddev %.5f. wd %.5f" % (name, mean, stddev, wd))
+    initializer = tf.truncated_normal_initializer(mean,
+                                                  stddev=stddev,
+                                                  dtype=tf.float32)
+    return _cpu_var(name, shape, initializer, wd)
 
 
-
+# not regularized
 def _zero_cpu_var(name, shape, val=0):
     initializer = tf.constant_initializer(val, dtype=tf.float32)
     return _cpu_var(name, shape, initializer)
 
+
+MODE_training = 0
+MODE_testing = 1
+MODE_bncallibrate = 2
 # mean to work properly for both CONV and FC layers
 # is_training = True in training mode
 # init scale is initial value for scale
-def batch_normalization(layer, is_training, scale_init, local_scope_name):
-    (towerscope,layerscope) = local_scope_name
+def batch_normalization(layer, mode, scale_init, local_scope_name):
     depth = layer.get_shape()[-1]
+    decay = 0.99 # used for updating population stuff.
+    
+    ## trained variables.
+    offset = _zero_cpu_var('batch_norm_offset', shape=[depth], val = 1.)
+    scale = _normal_regularized_cpu_var('batch_norm_scale', shape=[depth], mean=scale_init, stddev=0.001, wd=0.001) # never negative
+    
+    
+    ## approximation of a population average
+    ## in theory it would be better to do the actual average,
+    ## makes code harder
+    pop_mean =  tf.get_variable('pop_mean',
+                                shape=[depth],
+                                trainable=False,
+                                initializer=tf.constant_initializer())
+    
+    pop_variance = tf.get_variable('pop_variance',
+                                   shape=[depth],
+                                   trainable=False,
+                                   initializer=tf.constant_initializer(1))
+    if pop_mean not in tf.get_collection('pop'):
+        tf.add_to_collection('pop', pop_mean)
+    if pop_variance not in tf.get_collection('pop'):
+        tf.add_to_collection('pop', pop_variance)
 
-    # expected behavior: given a name,
-    # a new variable will be created at training time (per gpu)
-    # then, at run time, given a name match, the old vaue will be retrieved
-    with tf.variable_scope(towerscope):
-        with tf.variable_scope(layerscope):
-            with tf.variable_scope('local'):
-                local_mean =  tf.get_variable('batch_mean', shape=[depth],
-                                          trainable=False, initializer=tf.constant_initializer())
-            
-                local_variance = tf.get_variable('batch_variance', shape=[depth],
-                                trainable=False, initializer=tf.constant_initializer(1.))
+    # during training: use batch moments
+    # 2 dims for FC, 4 for CONV.
+    shape_len = len(layer.get_shape())
+    assert(shape_len in [2,4])
+    # [0,1,2]  for CONV
+    # [0]  for FC
 
-    bn_vars = {
-        # running averages (to be used at runtime)
-        'mean': local_mean,
-        'variance' : local_variance,
+    axes = range(shape_len)[:-1] # for averaging
+    
+    (batch_mean, batch_variance) = tf.nn.moments(layer, axes)
+    if mode == Mode.training:
 
-        # trainables
-        'offset': _zero_cpu_var('offset', shape=[depth], val = 0.),
-        'scale': _zero_cpu_var('scale', shape=[depth], val=scale_init)
-    }
+        update_mean = tf.assign(pop_mean,
+                             pop_mean * decay + (1. - decay)*batch_mean )
 
-    if is_training:
-        # create variables
-        # during training: use batch moments
-        # 2 dims for FC, 4 for CONV.
-        shape_len = len(layer.get_shape())
-        assert(shape_len in [2,4])
-
-        axes = range(shape_len)[:-1] # for averaging
-        # [0,1,2]  for CONV
-        # [0]  for FC
+        update_variance = tf.assign(pop_variance,
+                                 pop_variance * decay + (1.-decay)*batch_variance )
         
-        (batch_mean, batch_variance) = tf.nn.moments(layer, axes)
-        ema = tf.train.ExponentialMovingAverage(decay=0.9999)
-
-        update_mean = tf.assign(bn_vars['mean'], batch_mean, name='assign_mean')
-        update_variance = tf.assign(bn_vars['variance'], batch_variance, name='assign_variance')
-
-        # want to update batch average before computing exponential avg on it
-        update_exp_avg_op = ema.apply([update_mean, update_variance])
-
         # condition return value on updating these averages
-        with tf.control_dependencies([update_exp_avg_op]):
+        with tf.control_dependencies([update_mean, update_variance]):
             bn = tf.nn.batch_normalization(layer,
-                                           batch_mean,
-                                           batch_variance,
-                                           bn_vars['offset'],
-                                           bn_vars['scale'],
-                                           variance_epsilon=0.001)
-    else:
-        # variables have been trained.
-        # and average/variance over dataset for this layer
-        # was computed already
+                                           batch_mean, batch_variance,
+                                           offset, scale, variance_epsilon=0.001)
+    elif mode == Mode.testing:
         bn = tf.nn.batch_normalization(layer,
-                                       bn_vars['mean'],
-                                       bn_vars['variance'],
-                                       bn_vars['offset'],
-                                       bn_vars['scale'],
+                                       pop_mean,
+                                       pop_variance,
+                                       offset,
+                                       scale,
                                        variance_epsilon=0.001)
-
+    else:
+        assert('unknown mode')
+        
     return bn
 
 
@@ -130,14 +163,18 @@ def batch_normalization(layer, is_training, scale_init, local_scope_name):
 ## after adding batch normalization.
 ## even though they share the same trained variables.
 def _model(x, keep_dropout, is_training, local_scope_name):
+    if is_training:
+        is_training = Mode.training
+    else:
+        is_training = Mode.testing
     
     # Conv + ReLU + LRN + Pool, 224->55->27
     with tf.variable_scope('conv1') as scope:
-        w = _normal_cpu_var('weights', [11, 11, 3, 96])
+        w = _normal_regularized_cpu_var('weights', shape=[11, 11, 3, 96], wd=0)            
         conv1 = tf.nn.conv2d(x, w, strides=[1, 4, 4, 1], padding='SAME')
 
         # note: bias term gets superseded internal offset of batch norm.
-        conv1 = batch_normalization(conv1, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
+        conv1 = batch_normalization(conv1, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         conv1 = tf.nn.relu(conv1)
         lrn1 = tf.nn.local_response_normalization(conv1, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
 
@@ -145,9 +182,9 @@ def _model(x, keep_dropout, is_training, local_scope_name):
 
     # Conv + ReLU + LRN + Pool, 27-> 13
     with tf.variable_scope('conv2') as scope:
-        w =  _normal_cpu_var('weights', [5, 5, 96, 256])
+        w =  _normal_regularized_cpu_var('weights', [5, 5, 96, 256], wd=0)
         conv2 = tf.nn.conv2d(pool1, w, strides=[1, 1, 1, 1], padding='SAME')
-        conv2 = batch_normalization(conv2, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
+        conv2 = batch_normalization(conv2, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         conv2 = tf.nn.relu(conv2)
         lrn2 = tf.nn.local_response_normalization(conv2, depth_radius=5, bias=1.0, alpha=1e-4, beta=0.75)
 
@@ -155,29 +192,29 @@ def _model(x, keep_dropout, is_training, local_scope_name):
 
     # Conv + ReLU, 13-> 13
     with tf.variable_scope('conv3') as scope:
-        w =  _normal_cpu_var('weights', [3, 3, 256, 384])
+        w =  _normal_regularized_cpu_var('weights', [3, 3, 256, 384], wd=0)
         conv3 = tf.nn.conv2d(pool2, w, strides=[1, 1, 1, 1], padding='SAME')
-        conv3 = batch_normalization(conv3, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
+        conv3 = batch_normalization(conv3, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         conv3 = tf.nn.relu(conv3)
 
     # Conv + ReLU, 13-> 13
     with tf.variable_scope('conv4') as scope:
-        w =  _normal_cpu_var('weights', [3, 3, 384, 256])
+        w =  _normal_regularized_cpu_var('weights', [3, 3, 384, 256], wd=0)
         conv4 = tf.nn.conv2d(conv3, w, strides=[1, 1, 1, 1], padding='SAME')
-        conv4 = batch_normalization(conv4, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
+        conv4 = batch_normalization(conv4, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         conv4 = tf.nn.relu(conv4)
 
     # Conv + ReLU + Pool, 13->6
     with tf.variable_scope('conv5') as scope:
-        w = _normal_cpu_var('weights', [3, 3, 256, 256])
+        w = _normal_regularized_cpu_var('weights', [3, 3, 256, 256], wd=0)
         conv5 = tf.nn.conv2d(conv4, w, strides=[1, 1, 1, 1], padding='SAME')
-        conv5 = batch_normalization(conv5, is_training, scale_init=stddev_for_shape(w.get_shape()), local_scope_name=(local_scope_name, scope))
+        conv5 = batch_normalization(conv5, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
         conv5 = tf.nn.relu(conv5)
         pool5 = tf.nn.max_pool(conv5, ksize=[1, 3, 3, 1], strides=[1, 2, 2, 1], padding='SAME')
         
     # FC + ReLU + Dropout
     with tf.variable_scope('fc6') as scope:
-        w =  _normal_cpu_var('weights', [7*7*256, 4096])
+        w =  _normal_regularized_cpu_var('weights', [7*7*256, 4096], wd=0.001)
         fc6 = tf.reshape(pool5, [-1, w.get_shape().as_list()[0]])
         fc6 = tf.matmul(fc6, w)
         fc6 = batch_normalization(fc6, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
@@ -186,7 +223,7 @@ def _model(x, keep_dropout, is_training, local_scope_name):
     
     # FC + ReLU + Dropout
     with tf.variable_scope('fc7') as scope:
-        w =  _normal_cpu_var('weights', [4096, 4096])
+        w =  _normal_regularized_cpu_var('weights', [4096, 4096], wd=0.001)
         fc7 = tf.matmul(fc6, w)
         fc7 = batch_normalization(fc7, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
         fc7 = tf.nn.relu(fc7)
@@ -199,7 +236,7 @@ def _model(x, keep_dropout, is_training, local_scope_name):
     # but the next layer is not being trained here, so leaving it
     # unnormalized
     with tf.variable_scope('output') as scope:
-        w =  _normal_cpu_var('weights', [4096, 100])
+        w =  _normal_regularized_cpu_var('weights', [4096, 100], wd=0.001)
         bo =  _zero_cpu_var('bias', [100])
         # keep the logits name as is (used to look up model op)
         out = tf.add(tf.matmul(fc7, w), bo, name='logits')
@@ -214,9 +251,11 @@ def model_run(x, local_scope_name):
 
 #TODO: make loss depend also on parameters?
 def loss(logits, y):
-    loss = tf.reduce_mean(
-        tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y))
-    return loss
+    cross_entropy_per_example = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y, name='cross_entropy_per_example')
+    cross_entropy = tf.reduce_mean(cross_entropy_per_example, name='cross_entropy')
+    tf.add_to_collection('losses', cross_entropy)
+    
+    return tf.add_n(tf.get_collection('losses'), name='total_loss')
 
 
 def optimizer(learning_rate):

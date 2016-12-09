@@ -10,7 +10,7 @@ import alexnet
 import re
 from tensorflow.python.client import timeline
 from collections import namedtuple
-
+from common import *
 
 
 
@@ -119,12 +119,12 @@ PARAMS = Params(
     fine_size = 224,
     c = 3,
     data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842]),
-    initial_learning_rate = 0.003 ,
-    decay_rate = 0.85, # by 5k iters, (10 times epoch) it is 0.0005. by 10k, it is 0.0001.
+    initial_learning_rate = 0.001,
+    decay_rate = 0.9,
     dropout = 0.5, # Dropout, probability to keep units
     num_images = 100000, # hardcoded for now.
     grid_x = 10, # for showing eval batches in tensorboard
-    eval_batches = 5 # number of batches to use for evaluation
+    eval_batches = 5, # number of batches to use for evaluation
 )
 
 print(PARAMS)
@@ -174,7 +174,6 @@ opt_data_val = {
 # loader_val = DataLoaderDisk(**opt_data_val)
 loader_train = DataLoaderH5(**opt_data_train)
 loader_val = DataLoaderH5(**opt_data_val)
-
 
 # makes a single picture out of a bunch of pictures
 # (eg a full layer of conv filters)
@@ -233,22 +232,22 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1, expand_factor=4):
 
     return tf.image.resize_images(prelim, size=new_sizes)
 
-def make_summary(mets):
-    summaries = []
-    for (name,node) in mets.items():
-        summaries.append(tf.scalar_summary(name, node))
-    return dict(list(mets.items()) + [('summary',tf.merge_summary(summaries))])
-
 def topkerror(logits, y, k):
    bools = tf.nn.in_top_k(logits, y, k)
-   topkaccuracy  = tf.reduce_mean(tf.cast(bools, tf.float32))
-   return 1 - topkaccuracy
+   topkerr  = tf.reduce_mean(tf.cast(1 - tf.cast(bools, tf.int32), tf.float32), name="top%derr" % k)
+   return topkerr
 
-def performance_metrics(logits, y):
+def performance_metrics(logits, y, summary=True):
     loss = model.loss(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
-    return {'loss':loss, 'top1err':top1err, 'top5err':top5err}
+
+    if summary:
+        tf.scalar_summary('loss', loss)
+        tf.scalar_summary('top1err', top1err)
+        tf.scalar_summary('top5err', top5err)
+
+    return {'loss':loss, 'top1':top1err, 'top5':top5err}
 
 # (orm: adapted from the CIFAR-10 example in tensorflow.)
 # a tower is a version of the model, including loss, that will run on a single gpu
@@ -270,11 +269,8 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   # get loss.
   total_loss = model.loss(logits, labels) 
 
-  # remove scoped prefix so tensorboard shows nicer stuff
-  loss_name = re.sub('tower_[0-9]*/', '', total_loss.name)
-
   # add a summary per tower
-  tf.scalar_summary(loss_name +' (raw)', total_loss)
+  tf.scalar_summary(total_loss.name, total_loss)
   return total_loss
 
 
@@ -371,7 +367,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     # define logger params
     summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
     summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
-    
+
     global_step = tf.get_variable('global_step', [],
                                   initializer=tf.constant_initializer(0),
                                   trainable=False, dtype=tf.int64)
@@ -381,15 +377,16 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
 
     # tf Graph input placeholders for each tower
     def input_placeholder(name):
-        return (name, {'images':tf.placeholder(tf.float32, [None, PARAMS.fine_size, PARAMS.fine_size, PARAMS.c]), 'labels':tf.placeholder(tf.int64, None)})
+        return (name,
+                {'images':tf.placeholder(tf.float32,
+                            [None, PARAMS.fine_size, PARAMS.fine_size, PARAMS.c],
+                                         name=str(name) + '_images'),
+                 
+                 'labels':tf.placeholder(tf.int64, None, name=str(name) + '_label')})
     
+    # we use placeholder[0] for both the first trainer gpu and periodic evaluation
     placeholders = dict([input_placeholder(n) for n in range(FLAGS.num_gpus)])
-
-    (_, evald) = input_placeholder('val')
-    val_images_placeholder = evald['images']
-    val_labels_placeholder = evald['labels']
-    
-    keep_dropout = tf.placeholder(tf.float32) # shared dropout setting
+    keep_dropout = tf.placeholder(tf.float32, name='dropout_rate') # shared dropout setting
 
     tower_grads = []
     opt = model.optimizer(learning_rate)
@@ -423,57 +420,47 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         grid_y = 8   # to get a square grid for 64 conv1 features
         grid = put_kernels_on_grid (weights, grid_y, grid_x)
         conv_summary = tf.image_summary('conv1/features', grid, max_images=1)
-    
+
+
     # use the same variables to construct the evaluation graph.
     # note. runnable model must be constructed after training ones for now
-    eval_logits = model.model_run(val_images_placeholder, local_scope_name='eval')
+    eval_logits = model.model_run(placeholders[0]['images'], local_scope_name='eval')
 
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
     lrsum = tf.scalar_summary('learning_rate', learning_rate)
     
-    summaries = [conv_summary, lrsum]
 
     #TODO: monitor histogram of gradients
     # right now complains about placeholders
     #for grad,var in grads:
-     #   if grad is not None:
-      #      summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
-
-    # TODO: add decay / track decay to model parameters?
+    #   if grad is not None:
+    #      summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
     
-
     # now apply merged gradients to model variables
     train_op = opt.apply_gradients(grads, global_step=global_step)
 
-    # TODO: log historgram of trainable variables.
+    # log historgram of trainable variables.
     for var in tf.trainable_variables():
-      summaries.append(tf.histogram_summary(var.op.name, var))
+      tf.histogram_summary(var.op.name, var)
 
-    # not sure if I need to say 'all_variables' (ie, does that include
-    # things outside the current graph)
-    saver_vars = tf.all_variables()
-    saver_dict = dict(map(lambda v: (v.name, v.dtype), saver_vars))
-    for (k,v) in saver_dict.items():
-        print(k, v)
+    # log population stats.
+    # note: adding this here means we only add summary once.
+    # otherwise, summary gets added every time that code runs.
+    for var in tf.get_collection('pop'):
+        tf.histogram_summary(var.op.name, var)
 
+    print("variables declared prior to saver and init:")
+    for v in tf.all_variables():
+        print(v.name, v)
+    print_param_sizes()
     saver = tf.train.Saver()
     init = tf.initialize_all_variables() 
 
     # perf eval.
-    metrics = performance_metrics(eval_logits, val_labels_placeholder)
-    summ_train = make_summary(metrics)
-    summ_eval = make_summary(metrics)
-
-    print_param_sizes()
-
+    metrics_target = performance_metrics(eval_logits, placeholders[0]['labels'])
+    
     # Launch the graph
-    # softplacement = allow some opts to not be in the gpu if TF
-    # prefers not to.
-    summaries.append(summ_train['summary'])
-    summary_op = tf.merge_summary(summaries)
-    # overwrite
-    summ_train['summary'] = summary_op 
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
         # Initialization
         if len(start_from)>1:
@@ -505,33 +492,41 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 batches.append({'images':images_batch, 'labels':labels_batch})
             load_end = time.time()
             
-            if step % step_display == 0:
+            if step % step_display == 0:                    
+                # all summaries are available at runtime (except maybe gradient targets?)
+                metrics_target['all_summaries'] = tf.merge_all_summaries()
                 
                 print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 start = time.time()
                 def run_test(target, feed_dict, name, step, writer):
                     # assert(PARAMS.batch_size % PARAMS.grid_x == 0)
-                    input_summary = tf.image_summary('input/batch',
-                                                      feed_dict[val_images_placeholder], max_images=4)
-                    target['inputs'] = input_summary
+                    # input_summary = tf.image_summary('input/batch',
+                    #                                   feed_dict[val_images_placeholder], max_images=4)
+                    #target['inputs'] = input_summary
                     res = sess.run(target, feed_dict=feed_dict)
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
                       "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
-                      "{:.2f}".format(res['top1err']) + ", Top5 = " + \
-                      "{:.2f}".format(res['top5err']))
-                    writer.add_summary(res['summary'], step)
-                    writer.add_summary(res['inputs'], step)
-                    
-                run_test(summ_train,
-                         feed_dict={val_images_placeholder: batches[0]['images'], val_labels_placeholder: batches[0]['labels'], keep_dropout: 1.},
+                      "{:.2f}".format(res['top1']) + ", Top5 = " + \
+                      "{:.2f}".format(res['top5']))
+                    writer.add_summary(res['all_summaries'], step)
+
+                # for training eval metrics we still use dropout 1.
+                feed_dict_train={placeholders[0]['images']: batches[0]['images'],
+                                 placeholders[0]['labels']: batches[0]['labels'],
+                                 keep_dropout: 1.}
+                run_test(metrics_target,
+                         feed_dict_train,
                          name='Training',
                          step=step,
                          writer=summary_writer_train)
 
                 # run val on larger batches to denoise print output a bit?
-                images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)    
-                run_test(summ_eval,
-                         feed_dict={val_images_placeholder: images_batch_val, val_labels_placeholder: labels_batch_val, keep_dropout: 1.},
+                images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)
+                feed_dict_eval= { placeholders[0]['images']: images_batch_val,
+                                  placeholders[0]['labels']: labels_batch_val,
+                                  keep_dropout: 1.}
+                run_test(metrics_target,
+                         feed_dict_eval,
                          name='Validation',
                          step=step,
                          writer=summary_writer_eval)
