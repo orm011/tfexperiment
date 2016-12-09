@@ -18,15 +18,13 @@ FLAGS = tf.app.flags.FLAGS
 #
 # other todos:
 # fix batch norm batches to use the eponential average at runtime
+#   done?
 # try out exponential averaging of the variables themselve
 #   (akin to taking several models and averaging them)
-# 
 # regularization rate for conv filters. bad at 0.001 (becomes 0) should it be something though?
 # truncated normal initialization (avoids extreme initial examples)
-# initial stddev for scaling weight initialization: what should it be. book :
-#     1/sqrt(#inputs) (avoids sum adding to large value). currently 2/sqrt(#inputs).
-#    Sum(w*xi) for xi being 1 and 0, with w being normally dist -> variance is num(xi)*var(w)
-# initial biases: alexnet initializes with biases of 1 in some cases, to make relu more likely to get non-zero inputs.
+  # done
+# initial biases: alexnet initializes with biases of 1 in some cases, to make relu more likely to get non-zero inputs. seems ta changed this. so making them 0.
 # 
 
 # adapted from CIFAR-10 example
@@ -68,7 +66,7 @@ def stddev_for_shape(shape):
     # eg shape is [11,11,3,96] => total = 11*11*3
     # this is the number of input activations for this kernel.
     
-    stddev = np.sqrt(1./total) # (variance = 1. / E[input dist] * total inputs )
+    stddev = np.sqrt(2./total) # used by TA, mentioned in stanford course
     return stddev
 
 def _normal_regularized_cpu_var(name, shape, wd, mean=0.0, stddev=None):
@@ -100,8 +98,12 @@ def batch_normalization(layer, mode, scale_init, local_scope_name):
     decay = 0.99 # used for updating population stuff.
     
     ## trained variables.
-    offset = _zero_cpu_var('batch_norm_offset', shape=[depth], val = 1.)
-    scale = _normal_regularized_cpu_var('batch_norm_scale', shape=[depth], mean=scale_init, stddev=0.001, wd=0.001) # never negative
+    offset = _zero_cpu_var('batch_norm_offset', shape=[depth], val=0.)
+
+    # with 0.005, all will be between 0.9 and 1.1
+    scale = _normal_regularized_cpu_var('batch_norm_scale', shape=[depth],
+                                        mean=1., stddev=0.005, wd=0.0005)
+    # never negative
     
     
     ## approximation of a population average
@@ -214,7 +216,7 @@ def _model(x, keep_dropout, is_training, local_scope_name):
         
     # FC + ReLU + Dropout
     with tf.variable_scope('fc6') as scope:
-        w =  _normal_regularized_cpu_var('weights', [7*7*256, 4096], wd=0.001)
+        w =  _normal_regularized_cpu_var('weights', [7*7*256, 4096], wd=0.0005)
         fc6 = tf.reshape(pool5, [-1, w.get_shape().as_list()[0]])
         fc6 = tf.matmul(fc6, w)
         fc6 = batch_normalization(fc6, is_training, scale_init=1., local_scope_name=(local_scope_name, scope))
@@ -223,7 +225,7 @@ def _model(x, keep_dropout, is_training, local_scope_name):
     
     # FC + ReLU + Dropout
     with tf.variable_scope('fc7') as scope:
-        w =  _normal_regularized_cpu_var('weights', [4096, 4096], wd=0.001)
+        w =  _normal_regularized_cpu_var('weights', [4096, 4096], wd=0.0005)
         fc7 = tf.matmul(fc6, w)
         fc7 = batch_normalization(fc7, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
         fc7 = tf.nn.relu(fc7)

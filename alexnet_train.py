@@ -120,14 +120,14 @@ PARAMS = Params(
     c = 3,
     data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842]),
     initial_learning_rate = 0.001,
-    decay_rate = 0.9,
+    decay_rate = 0.8,
     dropout = 0.5, # Dropout, probability to keep units
     num_images = 100000, # hardcoded for now.
     grid_x = 10, # for showing eval batches in tensorboard
     eval_batches = 5, # number of batches to use for evaluation
 )
 
-print(PARAMS)
+EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
 
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
@@ -370,10 +370,14 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
 
     global_step = tf.get_variable('global_step', [],
                                   initializer=tf.constant_initializer(0),
-                                  trainable=False, dtype=tf.int64)
+                                  trainable=False, dtype=tf.int32)
 
-    learning_rate = tf.train.exponential_decay(PARAMS.initial_learning_rate, global_step, PARAMS.num_images//PARAMS.batch_size, PARAMS.decay_rate, staircase=True)
-
+    #start strong first epoch, never go below .0001?
+    epoch_cutoffs = [ 1,    3,     5,     10]
+    values =         [.002, .001, .0005, .0002, .0001]
+    boundaries = [c*EPOCH_SIZE for c in epoch_cutoffs]
+    learning_rate = tf.train.piecewise_constant(global_step, boundaries, values, name='learning_rate')
+    #learning_rate = tf.train.exponential_decay(PARAMS.initial_learning_rate, global_step, PARAMS.num_images//PARAMS.batch_size, PARAMS.decay_rate, staircase=True)
 
     # tf Graph input placeholders for each tower
     def input_placeholder(name):
@@ -429,26 +433,65 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
     lrsum = tf.scalar_summary('learning_rate', learning_rate)
-    
 
-    #TODO: monitor histogram of gradients
-    # right now complains about placeholders
-    #for grad,var in grads:
-    #   if grad is not None:
-    #      summaries.append(tf.histogram_summary(var.op.name + '/gradients', grad))
-    
-    # now apply merged gradients to model variables
+    TRAINING_SUMMARIES = 'training_summaries'
+    # #TODO: monitor histogram of gradients
+    # # right now complains about placeholders
+    # for grad,var in grads:
+    #     tag = var.op.name + '/gradients'
+    #     gradsum = tf.histogram_summary(tag, grad, name=tag+'_histogram')
+    #     tf.add_to_collection(TRAINING_SUMMARIES, gradsum)
+
+    # # log historgram of trainable variables.
+    # before_update = {}
+    # for var in tf.trainable_variables():
+    #     ivar = tf.identity(var)
+    #     before_update[var.op.name] = tf.identity(var)
+
+    # # now apply merged gradients to model variables
+    # with tf.control_dependencies(before_update.values()):
     train_op = opt.apply_gradients(grads, global_step=global_step)
 
-    # log historgram of trainable variables.
-    for var in tf.trainable_variables():
-      tf.histogram_summary(var.op.name, var)
+    # this code attempts to measure the amount of change in our weights after each iteration
+    # these operations depend on the train op:
+    #   It's need is motivated by observing that the weights in conv1 seem to just stop changing altogether.
+    #   after a couple thousand iterations.
+    #   I would like to measure this more precisely to see where/when are the changes taking place
+    #   To implement this, we need to read the values of the same variables
+    #   before and after the train operation in order to compute the changes
+    #   the way I see to do this is using control dependencies (assuming I understand what that means)
+    # TODO: it would be interesting to visualize first layer deltas as well.
+    # with tf.control_dependencies([train_op]):
+    #     for vafter in tf.trainable_variables():
+    #         vbefore = before_update[vafter.op.name]
+    #         # update_to_weight_ratio = | after - before | / max(|before|,|after|, epsilon) 
+    #         vafter = tf.to_double(vafter)
+    #         vbefore = tf.to_double(vbefore)
+    #         epsilon = tf.constant(0.00001, dtype=tf.double)
+    #         delta = vafter - vbefore
 
+    #         base = tf.maximum(tf.abs(vbefore), tf.abs(vafter))
+    #         update_to_weight = tf.to_float(tf.truediv(tf.abs(delta),
+    #                                       tf.maximum(base,epsilon)))
+
+    #         tag = vafter.op.name + '/update_weight_ratio'
+    #         uwr = tf.histogram_summary(tag, update_to_weight, name=tag + '_histogram')
+            
+    #         tf.add_to_collection(TRAINING_SUMMARIES, uwr)
+
+    # this has no dependency on training
+    for var in tf.trainable_variables():
+        tag = var.op.name
+        tf.histogram_summary(var.op.name, var, name=tag+'_histogram')
+        sparsity = tf.nn.zero_fraction(var)
+        tag = var.op.name + '/sparsity'
+        tf.scalar_summary(tag, sparsity, name=tag + '_summary')
+        
     # log population stats.
     # note: adding this here means we only add summary once.
     # otherwise, summary gets added every time that code runs.
     for var in tf.get_collection('pop'):
-        tf.histogram_summary(var.op.name, var)
+        tf.histogram_summary(var.op.name, var, name=var.op.name + '/histogram_summary')
 
     print("variables declared prior to saver and init:")
     for v in tf.all_variables():
@@ -493,33 +536,34 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
             load_end = time.time()
             
             if step % step_display == 0:                    
-                # all summaries are available at runtime (except maybe gradient targets?)
-                metrics_target['all_summaries'] = tf.merge_all_summaries()
-                
-                print('[%s]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 start = time.time()
+                
+                print('[%s] Starting metrics run:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                print('--logidr=%s' % LOGDIR)
+
+                # for validation set, do not run training metrics (or else will update gradients...)
+                eval_summaries = [s for s in tf.get_collection(tf.GraphKeys.SUMMARIES) if (s not in tf.get_collection(TRAINING_SUMMARIES))]
+                metrics_target['all_summaries'] = tf.merge_summary(eval_summaries, 'eval_summary')
+                # includes gradient summaries for training target
+                metrics_target['all_summaries'] = tf.merge_all_summaries()
                 def run_test(target, feed_dict, name, step, writer):
-                    # assert(PARAMS.batch_size % PARAMS.grid_x == 0)
-                    # input_summary = tf.image_summary('input/batch',
-                    #                                   feed_dict[val_images_placeholder], max_images=4)
-                    #target['inputs'] = input_summary
-                    res = sess.run(target, feed_dict=feed_dict)
+                    res = sess.run(target, feed_dict=feed_dict, )
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
                       "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
                       "{:.2f}".format(res['top1']) + ", Top5 = " + \
                       "{:.2f}".format(res['top5']))
                     writer.add_summary(res['all_summaries'], step)
 
-                # for training eval metrics we still use dropout 1.
                 feed_dict_train={placeholders[0]['images']: batches[0]['images'],
                                  placeholders[0]['labels']: batches[0]['labels'],
                                  keep_dropout: 1.}
+                
                 run_test(metrics_target,
                          feed_dict_train,
                          name='Training',
                          step=step,
                          writer=summary_writer_train)
-
+                
                 # run val on larger batches to denoise print output a bit?
                 images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)
                 feed_dict_eval= { placeholders[0]['images']: images_batch_val,
@@ -530,8 +574,10 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          name='Validation',
                          step=step,
                          writer=summary_writer_eval)
+                
                 end = time.time()
-                print("Validation run took %.1f seconds" %( end - start))
+                #gradsum = tf.merge_summaries(tf.get_collection(TRAINING_SUMMARIES), 'gradient_summaries')
+                print("Metrics run took %.1f seconds" %( end - start))
 
             # Run optimization op (backprop)
             feed_dict = {}
