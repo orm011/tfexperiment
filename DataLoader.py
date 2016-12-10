@@ -3,6 +3,7 @@ import numpy as np
 import scipy.misc
 import h5py
 np.random.seed(123)
+import time
 
 # loading data from .h5
 class DataLoaderH5(object):
@@ -25,13 +26,16 @@ class DataLoaderH5(object):
 
         # up to 100k integers.
         self.shuffle_array = np.array(range(self.num))
-
+        self._reinit()
+        
     def _reinit(self):
         print('started shuffling array')
+        print("before: ", self.shuffle_array[:10])
         start = time.time()
-        self.shuffle_array = np.random.shuffle(self.shuffle_array)
+        np.random.shuffle(self.shuffle_array)
         end = time.time()
-        print('shuffled array in %.2f' % end - start)
+        print("after: " , self.shuffle_array[:10])
+        print('shuffled array in %.5f' % (end - start))
         self._idx = 0
         
     def next_batch(self, batch_size):
