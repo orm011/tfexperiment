@@ -1,7 +1,8 @@
 import os, datetime
 import numpy as np
 import tensorflow as tf
-from DataLoader import *
+#from DataLoader import *
+import loader # tf based loader
 import time
 import signal
 import sys
@@ -38,6 +39,9 @@ tf.app.flags.DEFINE_integer('step_display', 50,
                             """Number of batches to run before evaluating
                             and printing model performance metrics""")
 
+tf.app.flags.DEFINE_integer('profile_step', 13,
+                            'how often to print the timing info')
+
 tf.app.flags.DEFINE_integer('step_save', 10000,
                             """Number of batches to run before saving parameter checkpoint""")
 
@@ -60,13 +64,14 @@ tf.app.flags.DEFINE_integer('step_full_validation', 100000,
 and the smoother batch-error in tensorboard tracks it very well anyway.""")
 
 #subtract the cpu device
-detected_gpus = len(device_lib.list_local_devices()) - 1
+detected_gpus = 1 # len(device_lib.list_local_devices()) - 1
 tf.app.flags.DEFINE_integer('num_gpus', detected_gpus, """How many GPUs to use. Defaults to using all detected gpus""")
+
 
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 
-
+assert(FLAGS.num_gpus == 1)
 print("num gpus: ", FLAGS.num_gpus)
 
 # Id is used to identify a lot of our output files uniquely within outputdir
@@ -107,13 +112,14 @@ if start_from != '':
 
     print("CHECKPOINT FILE TO USE: %s" % cf)
 
-Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batches')
+Params = namedtuple('Params', 'batch_size eval_batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batches shuffle_window')
 
 # Dataset Parameters
 # Training Parameters
 # Add them here so we can print them all out to logs (helps to see if we changed them).
 PARAMS = Params(
     batch_size = 200,
+    eval_batch_size = 1000, # TODO: eval multiple batches and average.
     load_size = 256,
     fine_size = 224,
     c = 3,
@@ -124,6 +130,7 @@ PARAMS = Params(
     num_images = 100000, # hardcoded for now.
     grid_x = 10, # for showing eval batches in tensorboard
     eval_batches = 5, # number of batches to use for evaluation
+    shuffle_window = 0 # images window to shuffle samples from
 )
 
 EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
@@ -148,32 +155,6 @@ def print_param_sizes():
         print("(%s:%s). shape: %s. total: %d/%d (%.0f%%)" %
               (v.name, v.dtype, v.get_shape(), w, total_parameters, 100*(w/total_parameters)))
         
-
-# Construct dataloader
-opt_data_train = {
-    'data_h5': 'miniplaces_256_train.h5',
-    #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
-    #'data_list': 'YOURPATH/train.txt', # MODIFY PATH ACCORDINGLY
-    'load_size': PARAMS.load_size,
-    'fine_size': PARAMS.fine_size,
-    'data_mean': PARAMS.data_mean,
-    'randomize': True
-    }
-
-opt_data_val = {
-    'data_h5': 'miniplaces_256_val.h5',
-    #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
-    #'data_list': 'YOURPATH/val.txt',   # MODIFY PATH ACCORDINGLY
-    'load_size': PARAMS.load_size,
-    'fine_size': PARAMS.fine_size,
-    'data_mean': PARAMS.data_mean,
-    'randomize': False
-    }
-
-# loader_train = DataLoaderDisk(**opt_data_train)
-# loader_val = DataLoaderDisk(**opt_data_val)
-loader_train = DataLoaderH5(**opt_data_train)
-loader_val = DataLoaderH5(**opt_data_val)
 
 # makes a single picture out of a bunch of pictures
 # (eg a full layer of conv filters)
@@ -237,15 +218,15 @@ def topkerror(logits, y, k):
    topkerr  = tf.reduce_mean(tf.cast(1 - tf.cast(bools, tf.int32), tf.float32), name="top%derr" % k)
    return topkerr
 
-def performance_metrics(logits, y, summary=True):
+def performance_metrics(logits, y, collection):
     loss = model.loss(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
 
-    if summary:
-        tf.scalar_summary('loss', loss)
-        tf.scalar_summary('top1err', top1err)
-        tf.scalar_summary('top5err', top5err)
+    # allow later code to get all three things by key
+    tf.add_to_collection(collection, tf.scalar_summary('loss', loss))
+    tf.add_to_collection(collection, tf.scalar_summary('top1err', top1err))
+    tf.add_to_collection(collection, tf.scalar_summary('top5err', top5err))
 
     return {'loss':loss, 'top1':top1err, 'top5':top5err}
 
@@ -335,9 +316,36 @@ def record_signal(signum, frame):
 signal.signal(signal.SIGINT, record_signal)
 
 # start with an empty graph and make everything add stuff to it.
-with tf.Graph().as_default(), tf.device("/cpu:0"):
+with tf.Graph().as_default():
+    #tf.device("/cpu:0"):
+    # loader used for training exclusively
+    # loader used for validation metrics
+    # (val_imgs, val_labels) = loader.input_pipeline(
+    #     ['miniplaces_256_val.h5.tfrecords'],
+    #     LoadParams(batch_size=PARAMS.eval_batch_size,
+    #                load_size=PARAMS.load_size,
+    #                fine_size=PARAMS.fine_size,
+    #                data_mean=PARAMS.data_mean,
+    #                random_distort=False,
+    #                collection_name='eval_summaries',
+    #                shuffle_window=PARAMS.eval_batch_size))
+
+    # # loader used for running model on training set (but for evaluation)
+    # (train_metrics_imgs, train_metrics_labels) = loader.input_pipeline(
+    #     ['miniplaces_256_train.h5.tfrecords'],
+    #     LoadParams(batch_size=PARAMS.batch_size,
+    #                load_size=PARAMS.load_size,
+    #                fine_size=PARAMS.fine_size,
+    #                data_mean=PARAMS.data_mean,
+    #                random_distort=False,
+    #                collection_name='train_metrics_load',
+    #                shuffle_window=3*PARAMS.batch_size))    
+    
     # define logger params
     summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
+
+    summary_writer_training = tf.train.SummaryWriter(LOGDIR+'/training_' + ID, graph=tf.get_default_graph())
+
     summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
 
     global_step = tf.get_variable('global_step', [],
@@ -349,7 +357,6 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     values =         [.002, .001, .0005, .0002, .0001]
     boundaries = [c*EPOCH_SIZE for c in epoch_cutoffs]
     learning_rate = tf.train.piecewise_constant(global_step, boundaries, values, name='learning_rate')
-    #learning_rate = tf.train.exponential_decay(PARAMS.initial_learning_rate, global_step, PARAMS.num_images//PARAMS.batch_size, PARAMS.decay_rate, staircase=True)
 
     # tf Graph input placeholders for each tower
     def input_placeholder(name):
@@ -360,32 +367,43 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                  
                  'labels':tf.placeholder(tf.int64, None, name=str(name) + '_label')})
     
-    # we use placeholder[0] for both the first trainer gpu and periodic evaluation
-    placeholders = dict([input_placeholder(n) for n in range(FLAGS.num_gpus)])
-    keep_dropout = tf.placeholder(tf.float32, name='dropout_rate') # shared dropout setting
+    keep_dropout = tf.placeholder(tf.float32, name='dropout_rate')
+    # shared dropout setting
 
     tower_grads = []
     opt = model.optimizer(learning_rate)
 
-    for i in range(FLAGS.num_gpus):
-        with tf.device('/gpu:%d' %i ):
-            # NB this is a name scope, not a variable scope.
-            with tf.name_scope('%s_%d' % ("tower", i)) as scope:
-                xs = tf.identity(placeholders[i]['images'])
-                ys = tf.identity(placeholders[i]['labels'])
-                kd = tf.identity(keep_dropout)
-                loss = tower_loss(scope, xs, ys, kd, scope)
 
-                # stuff after here that calls get variable
-                # will reuse variables of the same name
-                # rather than make a new one
-                tf.get_variable_scope().reuse_variables()
-                # based on cifar. somehow only the last tower summaries are here
-                #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-                grads = opt.compute_gradients(loss)
-                # which are these?
-                #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-                tower_grads.append(grads)
+    # for i in range(FLAGS.num_gpus):
+    #     with tf.device('/gpu:%d' %i ):
+            # NB this is a name scope, not a variable scope.
+    with tf.name_scope('tower_0') as scope:
+        (train_imgs, train_labels)  = loader.input_pipeline(
+            ['miniplaces_256_train.h5.tfrecords'],
+            LoadParams(batch_size=PARAMS.batch_size,
+                       load_size=PARAMS.load_size,
+                       fine_size=PARAMS.fine_size,
+                       data_mean=PARAMS.data_mean,
+                       random_distort=True,
+                       collection_name='train_load',
+                       shuffle_window=PARAMS.shuffle_window))
+
+        xs = tf.identity(train_imgs)
+        ys = tf.identity(train_labels)
+        kd = tf.identity(keep_dropout)
+
+        loss = tower_loss(scope, xs, ys, 0.5, scope)
+
+        # stuff after here that calls get variable
+        # will reuse variables of the same name
+        # rather than make a new one
+        tf.get_variable_scope().reuse_variables()
+        # based on cifar. somehow only the last tower summaries are here
+        #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+        grads = opt.compute_gradients(loss)
+        # which are these?
+        #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+        tower_grads.append(grads)
 
     # this assumes the conv1 layer is done.
     # Visualize conv1 features
@@ -397,10 +415,10 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
         grid = put_kernels_on_grid (weights, grid_y, grid_x)
         conv_summary = tf.image_summary('conv1/features', grid, max_images=1)
 
-
-    # use the same variables to construct the evaluation graph.
-    # note. runnable model must be constructed after training ones for now
-    eval_logits = model.model_run(placeholders[0]['images'], local_scope_name='eval')
+    # train_metrics_logits = model.model_run(train_metrics_imgs,
+    #                                        train_metrics_labels)
+    
+    # val_logits = model.model_run(val_imgs, val_labels)
 
     # TODO: monitor learning rate of Adam?
     grads = average_gradients(tower_grads)
@@ -422,7 +440,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
 
     # # now apply merged gradients to model variables
     # with tf.control_dependencies(before_update.values()):
-    train_op = opt.apply_gradients(grads, global_step=global_step)
+    train_op = opt.apply_gradients(grads)
 
     # this code attempts to measure the amount of change in our weights after each iteration
     # these operations depend on the train op:
@@ -454,16 +472,15 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     # this has no dependency on training
     for var in tf.trainable_variables():
         tag = var.op.name
-        tf.histogram_summary(var.op.name, var, name=tag+'_histogram')
-        sparsity = tf.nn.zero_fraction(var)
-        tag = var.op.name + '/sparsity'
-        tf.scalar_summary(tag, sparsity, name=tag + '_summary')
+        hs = tf.histogram_summary(var.op.name, var, name=tag+'_histogram')
+        tf.add_to_collection('eval_summaries', hs)
         
     # log population stats.
     # note: adding this here means we only add summary once.
     # otherwise, summary gets added every time that code runs.
     for var in tf.get_collection('pop'):
-        tf.histogram_summary(var.op.name, var, name=var.op.name + '/histogram_summary')
+        hs = tf.histogram_summary(var.op.name, var, name=var.op.name + '/histogram_summary')
+        tf.add_to_collection('eval_summaries', hs)
 
     print("variables declared prior to saver and init:")
     for v in tf.all_variables():
@@ -473,91 +490,79 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     init = tf.initialize_all_variables() 
 
     # perf eval.
-    metrics_target = performance_metrics(eval_logits, placeholders[0]['labels'])
+    # train_metrics_target = performance_metrics(train_metrics_logits,
+    #                                            train_metrics_labels, 'train_metrics')
+    
+    # eval_metrics_target = performance_metrics(val_logits, val_labels, 'eval_summaries')
     
     # Launch the graph
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
+        tf.train.start_queue_runners(sess, coord=None, daemon=True, start=True, collection='queue_runners')
+
         # Initialization
         if len(start_from)>1:
             saver.restore(sess, cf)
             print("restored state from %s" % (cf,))
+            step = sess.run(global_step)
         else:
             print("starting from random state...")
             sess.run(init)
+            step = 0
 
-        step = sess.run(global_step) # usable by python code
         print("Initial step is %d" % step)
 
         iter_start = None
         while step < FLAGS.training_iters:
             last_iter_start = iter_start
             iter_start  = time.time()
-            if step > 0 and step % 13 == 0:
-                print("step %d profile: load: %0.1fs. train: %0.1fs. total: %0.1fs" % (step-1,
-                                                                                       load_end - load_start,
-                                                                                       train_end - train_start,
-                                                                                       iter_start - last_iter_start))
-
+            if step > 0 and step % FLAGS.profile_step == 0:
+                print("step %d profile: train: %0.1fs. total: %0.1fs" %
+                      (step-1,
+                       train_end - train_start,
+                       iter_start - last_iter_start))
             # Load a batch for each gpu.
-            # TODO use the queueing ops from TF so it happens asynchronously
-            batches = []
-            load_start = time.time()
-            for i in range(FLAGS.num_gpus):
-                images_batch, labels_batch = loader_train.next_batch(PARAMS.batch_size)
-                batches.append({'images':images_batch, 'labels':labels_batch})
-            load_end = time.time()
+            # batches = []
+            # load_start = time.time()
+            # for i in range(FLAGS.num_gpus):
+            #     images_batch, labels_batch = loader_train.next_batch(PARAMS.batch_size)
+            #     batches.append({'images':images_batch, 'labels':labels_batch})
+
             
-            if step % step_display == 0:                    
-                start = time.time()
+            #if False and step % step_display == 0:                    
+                # start = time.time()
+                # def run_test(target, feed_dict, name, step, writer):
+                #     res = sess.run(target, feed_dict=feed_dict, )
+                #     print("-Iter " + str(step) + ", %s Loss= " % name + \
+                #       "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
+                #       "{:.2f}".format(res['top1']) + ", Top5 = " + \
+                #       "{:.2f}".format(res['top5']))
+                #     writer.add_summary(res['all_summaries'], step)
                 
-                print('[%s] Starting metrics run:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-                print('--logidr=%s' % LOGDIR)
+                # print('[%s] Starting metrics run:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                # print('--logidr=%s' % LOGDIR)
+                
+                # train_metrics_target['all_summaries'] = tf.merge_summary(
+                #     tf.get_collection('train_metrics') + tf.get_collection('train_metrics_load')
+                # )
+                
+                # run_test(train_metrics_target,
+                #          feed_dict={ keep_dropout: 1.},
+                #          name='Training',
+                #          step=step,
+                #          writer=summary_writer_train)
 
-                # for validation set, do not run training metrics (or else will update gradients...)
-                eval_summaries = [s for s in tf.get_collection(tf.GraphKeys.SUMMARIES) if (s not in tf.get_collection(TRAINING_SUMMARIES))]
-                metrics_target['all_summaries'] = tf.merge_summary(eval_summaries, 'eval_summary')
-                # includes gradient summaries for training target
-                metrics_target['all_summaries'] = tf.merge_all_summaries()
-                def run_test(target, feed_dict, name, step, writer):
-                    res = sess.run(target, feed_dict=feed_dict, )
-                    print("-Iter " + str(step) + ", %s Loss= " % name + \
-                      "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
-                      "{:.2f}".format(res['top1']) + ", Top5 = " + \
-                      "{:.2f}".format(res['top5']))
-                    writer.add_summary(res['all_summaries'], step)
-
-                feed_dict_train={placeholders[0]['images']: batches[0]['images'],
-                                 placeholders[0]['labels']: batches[0]['labels'],
-                                 keep_dropout: 1.}
-                
-                run_test(metrics_target,
-                         feed_dict_train,
-                         name='Training',
-                         step=step,
-                         writer=summary_writer_train)
-                
-                # run val on larger batches to denoise print output a bit?
-                images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)
-                feed_dict_eval= { placeholders[0]['images']: images_batch_val,
-                                  placeholders[0]['labels']: labels_batch_val,
-                                  keep_dropout: 1.}
-                run_test(metrics_target,
-                         feed_dict_eval,
-                         name='Validation',
-                         step=step,
-                         writer=summary_writer_eval)
-                
-                end = time.time()
-                #gradsum = tf.merge_summaries(tf.get_collection(TRAINING_SUMMARIES), 'gradient_summaries')
-                print("Metrics run took %.1f seconds" %( end - start))
+                # eval_summaries = tf.get_collection('eval_summaries') 
+                # eval_metrics_target['all_summaries'] = tf.merge_summary(eval_summaries)
+                # # run val on larger batches to denoise print output a bit?
+                # run_test(eval_metrics_target,
+                #          feed_dict={ keep_dropout: 1.},
+                #          name='Validation',
+                #          step=step,
+                #          writer=summary_writer_eval)
+                # end = time.time()
+                # print("Metrics run took %.1f seconds" %( end - start))
 
             # Run optimization op (backprop)
-            feed_dict = {}
-            for i in range(FLAGS.num_gpus):
-                feed_dict[placeholders[i]['images']] = batches[i]['images']
-                feed_dict[placeholders[i]['labels']] = batches[i]['labels']
-                
-            feed_dict[keep_dropout] = PARAMS.dropout
 
             train_start = time.time()
             if FLAGS.timeline_trace:
@@ -566,14 +571,15 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
             else:
                 run_metadata = None
                 options = None
-                
-            (_, step) = sess.run([train_op, global_step],
-                                feed_dict=feed_dict,
-                                options=options,
-                                run_metadata=run_metadata)
-            
-            train_end = time.time()
 
+            (_, summ) = sess.run([train_op, tf.merge_summary(tf.get_collection('train_load'))],
+                                 feed_dict={keep_dropout:PARAMS.dropout},
+                                 options=options,
+                                 run_metadata=run_metadata)
+            summary_writer_training.add_summary(summ, global_step=step)
+            train_end = time.time()
+            step+=1
+            
             if FLAGS.timeline_trace:
                 trace = timeline.Timeline(step_stats=run_metadata.step_stats)
                 trace_file = open('timeline_%s.ctf.json' % step, 'w')
