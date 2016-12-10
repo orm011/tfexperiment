@@ -6,7 +6,7 @@ import io
 import os, datetime
 from common import LoadParams
 
-LOADER='loader'
+
 
 def preprocess(image, load_params):
     # imitate DataLoader.py code
@@ -85,30 +85,31 @@ def input_pipeline(filenames, load_params):
     
     # would like to see before/after.
     with tf.name_scope('loader'):
-        tf.add_to_collection(LOADER, tf.image_summary('before_after', before_after_batch))
-        tf.add_to_collection(LOADER, tf.image_summary('processed', processed_batch))
+        tf.add_to_collection(load_params.collection_name,
+                             tf.image_summary('before_after', before_after_batch))
+        tf.add_to_collection(load_params.collection_name, tf.image_summary('processed', processed_batch))
     
-    return processed_batch, label_batch
+    return [processed_batch, label_batch]
 
 
 # can run this to test / see what the loader does, after a change
 if __name__ == '__main__':
     lp = LoadParams(batch_size=4, load_size=256, fine_size=224,
                 data_mean=[0.45834960097,0.44674252445,0.41352266842],
-                random_distort=True, shuffle_window=1000)
+                    random_distort=True, shuffle_window=1000, collection_name='LOADER')
 
-    p = input_pipeline(['../h5data/miniplaces_256_val.h5.tfrecords'], lp)
+    [imgs,lab] = input_pipeline(['../h5data/miniplaces_256_val.h5.tfrecords'], lp)
 
     with tf.Session(config=tf.ConfigProto(log_device_placement=True)) as sess:
         tf.train.start_queue_runners(sess, coord=None, daemon=True, start=True, collection='queue_runners')
     
         writer = tf.train.SummaryWriter('logs/images', graph=tf.get_default_graph())
-        loader_summ = tf.merge_summary(tf.get_collection(LOADER))        
+        loader_summ = tf.merge_summary(tf.get_collection('LOADER'))        
     
         step = 0
         while True:
             print("Start")
-            res,summ = sess.run([p,loader_summ])
+            res,summ = sess.run([imgs,loader_summ])
             writer.add_summary(summ, global_step=step)
             print("Done. sleeping")
             time.sleep(20)
