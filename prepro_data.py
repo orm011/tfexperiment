@@ -5,7 +5,7 @@ import scipy.misc
 import tensorflow as tf
 
 FLAGS = tf.app.flags.FLAGS
-tf.app.flags.DEFINE_integer(datapath, '.',
+tf.app.flags.DEFINE_string('datapath', '.',
                             """Location of train/ val/ and test/ folders and their .txt descriptors""")
 
 def createH5(params):
@@ -19,9 +19,9 @@ def createH5(params):
 	list_lab = []
 	with open(params['data_list'], 'r') as f:
 	    for line in f:
-	        path, lab =line.rstrip().split(' ')
-	        list_im.append(os.path.join(params['data_root'], path))
-	        list_lab.append(int(lab))
+	        attrs = line.rstrip().split(' ')
+	        list_im.append(os.path.join(params['data_root'], attrs[0]))
+	        list_lab.append(list(map(lambda x:int(x), attrs[1:])))
 	list_im = np.array(list_im, np.object)
 	list_lab = np.array(list_lab, np.uint8)
 	N = list_im.shape[0]
@@ -54,7 +54,7 @@ if __name__=='__main__':
 		'split': 'train',
 		'img_resize': 256,
 		'data_root': '%s' % FLAGS.datapath,
-    		'data_list': '%s/train.txt' % FLAGS.datapath
+    		'data_list': '%s/train_joint.txt' % FLAGS.datapath
 	}
 
 	params_val = {
@@ -62,10 +62,10 @@ if __name__=='__main__':
 		'split': 'val',
 		'img_resize': 256,
 		'data_root': '%s/' % FLAGS.datapath,
-    		'data_list': '%s/val.txt' % FLAGS.datapath
+		'data_list': '%s/val_joint.txt' % FLAGS.datapath
 	}
-        
-        params_test = {
+
+	params_test = {
 		'name': 'miniplaces',
 		'split': 'test',
 		'img_resize': 256,
@@ -75,4 +75,4 @@ if __name__=='__main__':
 
 	createH5(params_train)
 	createH5(params_val)
-        createH5(params_test)
+        #createH5(params_test)
