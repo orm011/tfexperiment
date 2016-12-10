@@ -238,7 +238,7 @@ def topkerror(logits, y, k):
    return topkerr
 
 def performance_metrics(logits, y, summary=True):
-    loss = model.loss(logits, y)
+    loss = model.loss_scene_category(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
 
@@ -267,9 +267,15 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   logits = model.model_train(images, keep_dropout, local_scope_name=scope_name)
 
   # get loss.
-  total_loss = model.loss(logits, labels) 
+  category_loss = model.loss_scene_category(logits, labels[:,0])
+  total_loss_scene_attr = model.loss_scene_attrs(logits, labels[:,1:])
+  regularization_loss = tf.get_category('losses')
+
+  tf.reduce_sum(total_loss_scene_attr, axis=1, keep_dims=True)
+  total_loss = category_loss + total_loss_scene_attr + tf.add_n(regularization_loss)
 
   # add a summary per tower
+  tf.scalar_summary(category_loss.name, category_loss)
   tf.scalar_summary(total_loss.name, total_loss)
   return total_loss
 
