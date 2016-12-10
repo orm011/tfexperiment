@@ -107,13 +107,14 @@ if start_from != '':
 
     print("CHECKPOINT FILE TO USE: %s" % cf)
 
-Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batches')
+Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batch_size')
 
 # Dataset Parameters
 # Training Parameters
 # Add them here so we can print them all out to logs (helps to see if we changed them).
 PARAMS = Params(
     batch_size = 200,
+    eval_batch_size = 1000,
     load_size = 256,
     fine_size = 224,
     c = 3,
@@ -123,7 +124,6 @@ PARAMS = Params(
     dropout = 0.5, # Dropout, probability to keep units
     num_images = 100000, # hardcoded for now.
     grid_x = 10, # for showing eval batches in tensorboard
-    eval_batches = 5, # number of batches to use for evaluation
 )
 
 EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
@@ -157,6 +157,8 @@ opt_data_train = {
     'load_size': PARAMS.load_size,
     'fine_size': PARAMS.fine_size,
     'data_mean': PARAMS.data_mean,
+    'batch_size': PARAMS.batch_size,
+    'buffered_batches':3,
     'randomize': True
     }
 
@@ -167,7 +169,9 @@ opt_data_val = {
     'load_size': PARAMS.load_size,
     'fine_size': PARAMS.fine_size,
     'data_mean': PARAMS.data_mean,
-    'randomize': False
+    'batch_size': PARAMS.eval_batch_size,
+    'randomize': False,
+    'buffered_batches':2
     }
 
 # loader_train = DataLoaderDisk(**opt_data_train)
@@ -503,7 +507,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
             batches = []
             load_start = time.time()
             for i in range(FLAGS.num_gpus):
-                images_batch, labels_batch = loader_train.next_batch(PARAMS.batch_size)
+                images_batch, labels_batch = loader_train.next_batch()
                 batches.append({'images':images_batch, 'labels':labels_batch})
             load_end = time.time()
             
@@ -537,7 +541,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                          writer=summary_writer_train)
                 
                 # run val on larger batches to denoise print output a bit?
-                images_batch_val, labels_batch_val = loader_val.next_batch(PARAMS.eval_batches*PARAMS.batch_size)
+                images_batch_val, labels_batch_val = loader_val.next_batch()
                 feed_dict_eval= { placeholders[0]['images']: images_batch_val,
                                   placeholders[0]['labels']: labels_batch_val,
                                   keep_dropout: 1.}
