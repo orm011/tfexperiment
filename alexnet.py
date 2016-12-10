@@ -268,7 +268,7 @@ def loss_scene_category(logits, y):
     return cross_entropy
 
 def loss_scene_attrs(logits, y):
-    cross_entropy_per_example = tf.nn.sigmoid_cross_entropy_with_logits(logits, y, name='cross_entropy_per_example')
+    cross_entropy_per_example = tf.nn.sigmoid_cross_entropy_with_logits(logits, tf.to_float(y), name='cross_entropy_per_example')
     cross_entropy = tf.reduce_mean(cross_entropy_per_example, name='cross_entropy')
     #tf.add_to_collection('losses', cross_entropy)
     

@@ -238,6 +238,7 @@ def topkerror(logits, y, k):
    return topkerr
 
 def performance_metrics(logits, y, summary=True):
+    y = y[:,0]
     loss = model.loss_scene_category(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
@@ -269,9 +270,9 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   # get loss.
   category_loss = model.loss_scene_category(logits[0], labels[:,0])
   total_loss_scene_attr = model.loss_scene_attrs(logits[1], labels[:,1:])
-  regularization_loss = tf.get_category('losses')
+  regularization_loss = tf.get_collection('losses')
 
-  tf.reduce_sum(total_loss_scene_attr, axis=1, keep_dims=True)
+  tf.reduce_sum(total_loss_scene_attr, reduction_indices=1, keep_dims=True)
   total_loss = category_loss + total_loss_scene_attr + tf.add_n(regularization_loss)
 
   # add a summary per tower
@@ -479,7 +480,7 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     init = tf.initialize_all_variables() 
 
     # perf eval.
-    metrics_target = performance_metrics(eval_logits, placeholders[0]['labels'])
+    metrics_target = performance_metrics(eval_logits[0], placeholders[0]['labels'])
     
     # Launch the graph
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
