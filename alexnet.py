@@ -5,12 +5,11 @@ import sys
 import io
 from common import *
 
-FLAGS = tf.app.flags.FLAGS
 
 # l2 weight decay nudges filters to be smoother.
 # (ie, sharp peaks, like those in random noise, are discouraged.)
 # note 2^2 + 2^2  << 1^2 + 3^2
-CONV_WD = 0.0001 # used for conv filters. 0.001 makes them go to 0
+CONV_WD = 0.00001 # used for conv filters. 0.001 and 0.0001 makes some of them go to 0.
 FC_WD = 0.0005 # used for fully conn layers. tried 0.001 earlier.
 BN_WD = 0.0005 # used for batch norm.
 
