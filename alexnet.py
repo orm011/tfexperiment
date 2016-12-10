@@ -19,20 +19,11 @@ BN_WD = 0.0005 # used for batch norm.
 #tf.app.flags.DEFINE_boolean('use_fp16', False,
 #                            """Train the model using fp16.""")
 
-
 # TODOs:
 # filters are still looking terrible.
 #
-# other todos:
-# fix batch norm batches to use the eponential average at runtime
-#   done?
 # try out exponential averaging of the variables themselve
 #   (akin to taking several models and averaging them)
-# regularization rate for conv filters. bad at 0.001 (becomes 0) should it be something though?
-# truncated normal initialization (avoids extreme initial examples)
-  # done
-# initial biases: alexnet initializes with biases of 1 in some cases, to make relu more likely to get non-zero inputs. seems ta changed this. so making them 0.
-# 
 
 # adapted from CIFAR-10 example
 # does two main  things:
