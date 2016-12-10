@@ -61,7 +61,7 @@ and the smoother batch-error in tensorboard tracks it very well anyway.""")
 
 #subtract the cpu device
 detected_gpus = len(device_lib.list_local_devices()) - 1
-tf.app.flags.DEFINE_integer('num_gpus', detected_gpus, """How many GPUs to use. Defaults to using all detected gpus""")
+tf.app.flags.DEFINE_integer('num_gpus', 1, """How many GPUs to use. Defaults to using all detected gpus""")
 
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
@@ -267,8 +267,8 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   logits = model.model_train(images, keep_dropout, local_scope_name=scope_name)
 
   # get loss.
-  category_loss = model.loss_scene_category(logits, labels[:,0])
-  total_loss_scene_attr = model.loss_scene_attrs(logits, labels[:,1:])
+  category_loss = model.loss_scene_category(logits[0], labels[:,0])
+  total_loss_scene_attr = model.loss_scene_attrs(logits[1], labels[:,1:])
   regularization_loss = tf.get_category('losses')
 
   tf.reduce_sum(total_loss_scene_attr, axis=1, keep_dims=True)

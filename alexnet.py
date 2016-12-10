@@ -123,12 +123,13 @@ def batch_normalization(layer, mode, scale_init, local_scope_name):
     # during training: use batch moments
     # 2 dims for FC, 4 for CONV.
     shape_len = len(layer.get_shape())
+    print('shape_len', shape_len)
     assert(shape_len in [2,4])
     # [0,1,2]  for CONV
     # [0]  for FC
 
     axes = range(shape_len)[:-1] # for averaging
-    
+    print('axes', axes)
     (batch_mean, batch_variance) = tf.nn.moments(layer, axes)
     if mode == Mode.training:
 
