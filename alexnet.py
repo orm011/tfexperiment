@@ -40,9 +40,9 @@ def _cpu_var(name, shape, initializer, wd=None):
   Returns:
     Variable Tensor
   """
-    with tf.device('/cpu:0'):
+    #with tf.device('/cpu:0'):
         #dtype = tf.float16 if FLAGS.use_fp16 else tf.float32
-        var = tf.get_variable(name, shape, initializer=initializer)
+    var = tf.get_variable(name, shape, initializer=initializer)
 
     if wd != None:
         weight_decay = tf.mul(tf.nn.l2_loss(var), wd, name=name + '_weight_loss')

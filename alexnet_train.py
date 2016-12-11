@@ -59,6 +59,10 @@ tf.app.flags.DEFINE_integer('step_full_validation', 100000,
                             """how often to run valdation metrics on full validation set. WARNING: Seems to make the program go slower and slower over time, 
 and the smoother batch-error in tensorboard tracks it very well anyway.""")
 
+tf.app.flags.DEFINE_float('baseline_error', 0.25,
+                          """when we start saving models due to their performance. Below this baseline, any validation top5 accuracy 
+                          improvements beating the previous record get saved.""")
+
 #subtract the cpu device
 detected_gpus = len(device_lib.list_local_devices()) - 1
 tf.app.flags.DEFINE_integer('num_gpus', 1, """How many GPUs to use. Defaults to using all detected gpus""")
@@ -130,6 +134,7 @@ EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
 
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
+number_to_beat = FLAGS.baseline_error
 
 def print_param_sizes():
     print("Summary of model layer sizes (highest to low):")
@@ -171,7 +176,7 @@ opt_data_val = {
     'data_mean': PARAMS.data_mean,
     'batch_size': PARAMS.eval_batch_size,
     'randomize': False,
-    'buffered_batches':2
+    'buffered_batches':1
     }
 
 # loader_train = DataLoaderDisk(**opt_data_train)
@@ -346,7 +351,8 @@ def record_signal(signum, frame):
 signal.signal(signal.SIGINT, record_signal)
 
 # start with an empty graph and make everything add stuff to it.
-with tf.Graph().as_default(), tf.device("/cpu:0"):
+with tf.Graph().as_default():
+#tf.device("/cpu:0"):
     # define logger params
     summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
     summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
@@ -379,24 +385,24 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
     opt = model.optimizer(learning_rate)
 
     for i in range(FLAGS.num_gpus):
-        with tf.device('/gpu:%d' %i ):
-            # NB this is a name scope, not a variable scope.
-            with tf.name_scope('%s_%d' % ("tower", i)) as scope:
-                xs = tf.identity(placeholders[i]['images'])
-                ys = tf.identity(placeholders[i]['labels'])
-                kd = tf.identity(keep_dropout)
-                loss = tower_loss(scope, xs, ys, kd, scope)
+        #with tf.device('/gpu:%d' %i ):
+        # NB this is a name scope, not a variable scope.
+        with tf.name_scope('%s_%d' % ("tower", i)) as scope:
+            xs = tf.identity(placeholders[i]['images'])
+            ys = tf.identity(placeholders[i]['labels'])
+            kd = tf.identity(keep_dropout)
+            loss = tower_loss(scope, xs, ys, kd, scope)
 
-                # stuff after here that calls get variable
-                # will reuse variables of the same name
-                # rather than make a new one
-                tf.get_variable_scope().reuse_variables()
-                # based on cifar. somehow only the last tower summaries are here
-                #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-                grads = opt.compute_gradients(loss)
-                # which are these?
-                #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-                tower_grads.append(grads)
+            # stuff after here that calls get variable
+            # will reuse variables of the same name
+            # rather than make a new one
+            tf.get_variable_scope().reuse_variables()
+            # based on cifar. somehow only the last tower summaries are here
+            #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+            grads = opt.compute_gradients(loss)
+            # which are these?
+            #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+            tower_grads.append(grads)
 
     # this assumes the conv1 layer is done.
     # Visualize conv1 features
@@ -533,9 +539,10 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                     res = sess.run(target, feed_dict=feed_dict, )
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
                       "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
-                      "{:.2f}".format(res['top1']) + ", Top5 = " + \
-                      "{:.2f}".format(res['top5']))
+                      "{:.3f}".format(res['top1']) + ", Top5 = " + \
+                      "{:.3f}".format(res['top5']))
                     writer.add_summary(res['all_summaries'], step)
+                    return res
 
                 feed_dict_train={placeholders[0]['images']: batches[0]['images'],
                                  placeholders[0]['labels']: batches[0]['labels'],
@@ -552,15 +559,25 @@ with tf.Graph().as_default(), tf.device("/cpu:0"):
                 feed_dict_eval= { placeholders[0]['images']: images_batch_val,
                                   placeholders[0]['labels']: labels_batch_val,
                                   keep_dropout: 1.}
-                run_test(metrics_target,
-                         feed_dict_eval,
-                         name='Validation',
-                         step=step,
-                         writer=summary_writer_eval)
-                
+                res = run_test(metrics_target,
+                               feed_dict_eval,
+                               name='Validation',
+                               step=step,
+                               writer=summary_writer_eval)
+
+                if res['top5'] < number_to_beat - 0.005:
+                    number_to_beat = res['top5']
+                    print("Saving model of new record %.3f" % number_to_beat)
+                    saver.save(sess, path_save + ("%.3f" % number_to_beat),
+                               global_step=step)
+                    
                 end = time.time()
+                    
                 #gradsum = tf.merge_summaries(tf.get_collection(TRAINING_SUMMARIES), 'gradient_summaries')
-                print("Metrics run took %.1f seconds" %( end - start))
+                print("Metrics run took %.1f seconds. Top5 to beat: %.3f" %( end - start, number_to_beat))
+
+
+                    
 
             # Run optimization op (backprop)
             feed_dict = {}
