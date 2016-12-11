@@ -134,7 +134,7 @@ EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
 
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
-number_to_beat = FLAGS.baseline_error
+number_to_beat = 0.99
 
 def print_param_sizes():
     print("Summary of model layer sizes (highest to low):")
@@ -565,11 +565,12 @@ with tf.Graph().as_default():
                                step=step,
                                writer=summary_writer_eval)
 
-                if res['top5'] < number_to_beat - 0.005:
+                if (res['top5'] < number_to_beat - 0.005):
                     number_to_beat = res['top5']
-                    print("Saving model of new record %.3f" % number_to_beat)
-                    saver.save(sess, path_save + ("%.3f" % number_to_beat),
-                               global_step=step)
+                    if res['top5'] < FLAGS.baseline_error:
+                        print("Saving model of new record %.3f" % number_to_beat)
+                        saver.save(sess, path_save + ("%.3f" % number_to_beat),
+                                   global_step=step)
                     
                 end = time.time()
                     
