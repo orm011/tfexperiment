@@ -39,7 +39,7 @@ class DataLoaderH5(object):
     #the data-loading task
     def load_task(self):
         while True:
-            labels_batch = np.zeros((batch_size, 103))
+            labels_batch = np.zeros((self.batch_size, 103))
             images_batch = np.zeros((self.batch_size, self.fine_size, self.fine_size, 3)) 
 
             for i in range(self.batch_size):
