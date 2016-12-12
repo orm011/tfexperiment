@@ -136,7 +136,7 @@ def print_param_sizes():
 # loader_val = DataLoaderDisk(**opt_data_val)
 loader_train = DataLoaderH5(**opt_data_train)
 loader_val = DataLoaderH5(**opt_data_val)
-
+loader_fullval =  DataLoaderH5(**opt_data_val)
 # makes a single picture out of a bunch of pictures
 # (eg a full layer of conv filters)
 # this way, we can see all of them (rather than only a couple)
@@ -232,7 +232,7 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
 
   # tf.scalar_summary(total_loss.name, total_loss)
   # 2 trainables
-  return (cat_loss, attr_loss, cat_loss) #+ category_loss)
+  return (cat_loss, attr_loss, cat_loss+attr_loss) #+ category_loss)
 
 
 # (orm: adapted from CIFAR-10)
@@ -568,26 +568,26 @@ with tf.Graph().as_default():
                          writer=summary_writer_eval)
                                 
 
-                if (step % 250) == 0:
+                if (step % 500) == 0:
                     res = full_validation_attr((placeholders[0]['images'],
                                                 placeholders[0]['labels'],
                                                 placeholders[0]['attributes'],
                                                 metrics_target_attr),
-                                          sess, loader_val, {keep_dropout: 1.})
+                                          sess, loader_fullval, {keep_dropout: 1.})
 
                     res = full_validation_cat((placeholders[0]['images'],
                                                   placeholders[0]['labels'],
                                                   placeholders[0]['attributes'],
                                                   metrics_target_cat),
-                                          sess, loader_val, {keep_dropout: 1.})
+                                          sess, loader_fullval, {keep_dropout: 1.})
 
                     
                     if (res < number_to_beat - 0.005):
                         number_to_beat = res
-                    if res < FLAGS.baseline_error:
-                        print("Saving model of new record %.3f" % number_to_beat)
-                        saver.save(sess, path_save + ("%.3f" % number_to_beat),
-                                   global_step=step)
+                        if res < FLAGS.baseline_error:
+                            print("Saving model of new record %.3f" % number_to_beat)
+                            saver.save(sess, path_save + ("%.3f" % number_to_beat),
+                                       global_step=step)
 
                     
 

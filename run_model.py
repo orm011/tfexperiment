@@ -37,9 +37,15 @@ loader = DataLoaderH5(**opt_data_val)
 sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
 
 x = tf.placeholder(tf.float32, [None, PARAMS.fine_size, PARAMS.fine_size, PARAMS.c])
+
 y = tf.placeholder(tf.int64, None)
-logits = alexnet.model_run(x, local_scope_name='eval')[0]
-metrics = performance_metrics(logits, y, alexnet)
+
+with tf.variable_scope('model1') as scope:
+        logits1 = alexnet.model_run(x, local_scope_name='eval')[0]
+
+
+logits1 = 
+        metrics = performance_metrics(logits, y, alexnet)
 
 saver = tf.train.Saver()
 saver.restore(sess, data)

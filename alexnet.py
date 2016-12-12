@@ -269,7 +269,7 @@ def loss_scene_category(logits, y):
 def loss_scene_attrs(logits, attrs):
     y = tf.sigmoid(attrs) # we are geting logits from the other net
     # this loss is not exclusive
-    cross_entropy_per_example = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight=0.2, name='cross_entropy_per_example')
+    cross_entropy_per_example = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight=0.05, name='cross_entropy_per_example')
 
     # sum losses over all 102 attributes (weighted equally right now)
     cross_entropy = tf.reduce_sum(cross_entropy_per_example,
@@ -277,7 +277,7 @@ def loss_scene_attrs(logits, attrs):
 
     # mean loss over batch
     cross_entropy = tf.reduce_mean(cross_entropy, name='cross_entropy')
-    return cross_entropy
+    return 2*cross_entropy
 
 def optimizer(learning_rate):
     return tf.train.AdamOptimizer(learning_rate=learning_rate)

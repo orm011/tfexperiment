@@ -180,12 +180,12 @@ def full_validation_cat(target_tuple, sess, loader, otherph={}):
         err5s.append(r['top5'])
         print('...',)
         
-        err1s.sort()
-        err5s.sort()
-        err1_total = np.mean(err1s)
-        err5_total = np.mean(err5s)
+    err1s.sort()
+    err5s.sort()
+    err1_total = np.mean(err1s)
+    err5_total = np.mean(err5s)
         
-        rng=(err5s[0], err5s[-1])
-        print('Category Evaluation Finished After %.2fs.\nError Top1 = %.4f.\nError Top5 = %.4f.\n(Min,Max) = (%.3f, %.3f)' %(time.time() - start, err1_total, err5_total, rng[0], rng[1]))
+    rng=(err5s[0], err5s[-1])
+    print('Category Evaluation Finished After %.2fs.\nError Top1 = %.4f.\nError Top5 = %.4f.\n(Min,Max) = (%.3f, %.3f)' %(time.time() - start, err1_total, err5_total, rng[0], rng[1]))
         
-        return err5_total
+    return err5_total
