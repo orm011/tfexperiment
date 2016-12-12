@@ -18,13 +18,13 @@ LoadParams = namedtuple('LoadParams',
                         """)
 
 
-Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batch_size')
+Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batch_size num_scene_attributes num_categories')
 
 # Dataset Parameters
 # Training Parameters
 # Add them here so we can print them all out to logs (helps to see if we changed them).
 PARAMS = Params(
-    batch_size = 400,
+    batch_size = 200,
     eval_batch_size = 1000,
     load_size = 256,
     fine_size = 224,
@@ -35,6 +35,8 @@ PARAMS = Params(
     dropout = 0.5, # Dropout, probability to keep units
     num_images = 100000, # hardcoded for now.
     grid_x = 10, # for showing eval batches in tensorboard
+    num_scene_attributes = 102,
+    num_categories = 100
 )
 
 EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
