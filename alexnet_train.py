@@ -34,7 +34,7 @@ FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_integer('training_iters', 100000,
                             """Number of batches to run.""")
 
-tf.app.flags.DEFINE_integer('step_display', 50,
+tf.app.flags.DEFINE_integer('step_display', 250,
                             """Number of batches to run before evaluating
                             and printing model performance metrics""")
 
@@ -505,7 +505,7 @@ with tf.Graph().as_default():
                          writer=summary_writer_eval)
 
 
-                if step % 2*step_display == 0:
+                if (step % (2*step_display)) == 0:
                     res = full_validation((placeholders[0]['images'],
                                            placeholders[0]['labels'], metrics_target),
                                           sess, loader_val, {keep_dropout: 1.})
