@@ -217,15 +217,17 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   logits = model.model_train(images, keep_dropout, local_scope_name=scope_name)
 
   # get loss.
-  category_loss = model.loss_scene_category(logits[0], labels[:,0])
-  total_loss_scene_attr = model.loss_scene_attrs(logits[1], labels[:,1:])
-  regularization_loss = tf.get_collection('losses')
-
-  tf.reduce_sum(total_loss_scene_attr, reduction_indices=1, keep_dims=True)
-  total_loss = category_loss + total_loss_scene_attr + tf.add_n(regularization_loss)
-
+  #category_loss = model.loss_scene_category(logits, labels[0], name=category_loss)
+  #tf.scalar_summary(category_loss.name, category_loss)
+  print("attrs", attributes.get_shape())
+  attribute_loss = model.loss_scene_attrs(logits, attributes)
+  reg_loss = tf.add_n(tf.get_collection('losses'), name='reg_loss')
+  total_loss = attribute_loss + reg_loss # + category_loss
+  print("attr_loss shape", attribute_loss.get_shape())
+  print("reg_loss shape", reg_loss.get_shape())
   # add a summary per tower
-  tf.scalar_summary(category_loss.name, category_loss)
+  tf.scalar_summary(reg_loss.name, reg_loss)
+  tf.scalar_summary(attribute_loss.name, attribute_loss)
   tf.scalar_summary(total_loss.name, total_loss)
   return total_loss
 
@@ -316,7 +318,9 @@ with tf.Graph().as_default():
                             [None, PARAMS.fine_size, PARAMS.fine_size, PARAMS.c],
                                          name=str(name) + '_images'),
                  
-                 'labels':tf.placeholder(tf.int64, None, name=str(name) + '_label')})
+                 'labels':tf.placeholder(tf.int64, None, name=str(name) + '_label'),
+                 'attributes':tf.placeholder(tf.float32, [None, PARAMS.num_scene_attributes], name=str(name)+'_attrs')
+                })
     
     # we use placeholder[0] for both the first trainer gpu and periodic evaluation
     placeholders = dict([input_placeholder(n) for n in range(FLAGS.num_gpus)])
@@ -331,8 +335,9 @@ with tf.Graph().as_default():
         with tf.name_scope('%s_%d' % ("tower", i)) as scope:
             xs = tf.identity(placeholders[i]['images'])
             ys = tf.identity(placeholders[i]['labels'])
+            attrs = tf.identity(placeholders[i]['attributes'])
             kd = tf.identity(keep_dropout)
-            loss = tower_loss(scope, xs, ys, kd, scope)
+            loss = tower_loss(scope, xs, (ys,attrs), kd, scope)
 
             # stuff after here that calls get variable
             # will reuse variables of the same name
@@ -462,8 +467,9 @@ with tf.Graph().as_default():
             batches = []
             load_start = time.time()
             for i in range(FLAGS.num_gpus):
-                images_batch, labels_batch = loader_train.next_batch()
-                batches.append({'images':images_batch, 'labels':labels_batch})
+                images_batch, labels_batch, attributes_batch= loader_train.next_batch()
+                batches.append({'images':images_batch, 'labels':labels_batch,
+                                'attributes':attributes_batch})
             load_end = time.time()
             
             if step % step_display == 0:                    
@@ -488,6 +494,7 @@ with tf.Graph().as_default():
 
                 feed_dict_train={placeholders[0]['images']: batches[0]['images'],
                                  placeholders[0]['labels']: batches[0]['labels'],
+                                 placeholders[0]['attributes']: batches[0]['attributes'],
                                  keep_dropout: 1.}
                 
                 run_test(metrics_target,
@@ -497,9 +504,10 @@ with tf.Graph().as_default():
                          writer=summary_writer_train)
 
                 # run val on larger batches to denoise print output a bit?
-                images_batch_val, labels_batch_val = loader_val.next_batch()
+                images_batch_val, labels_batch_val, attributes_batch_val = loader_val.next_batch()
                 feed_dict_eval= { placeholders[0]['images']: images_batch_val,
                                   placeholders[0]['labels']: labels_batch_val,
+                                  placeholders[0]['attributes'] : attributes_batch_val,
                                   keep_dropout: 1.}
 
                 run_test(metrics_target,
@@ -511,7 +519,9 @@ with tf.Graph().as_default():
 
                 if (step % (2*step_display)) == 0:
                     res = full_validation((placeholders[0]['images'],
-                                           placeholders[0]['labels'], metrics_target),
+                                           placeholders[0]['labels'],
+                                           placeholders[0]['attributes'],
+                                           metrics_target),
                                           sess, loader_val, {keep_dropout: 1.})
                     if (res < number_to_beat - 0.005):
                         number_to_beat = res
@@ -528,6 +538,7 @@ with tf.Graph().as_default():
             for i in range(FLAGS.num_gpus):
                 feed_dict[placeholders[i]['images']] = batches[i]['images']
                 feed_dict[placeholders[i]['labels']] = batches[i]['labels']
+                feed_dict[placeholders[i]['attributes']] = batches[i]['attributes']
                 
             feed_dict[keep_dropout] = PARAMS.dropout
 

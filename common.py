@@ -74,8 +74,37 @@ def topkerror(logits, y, k):
    return topkerr
 
 
+def attribute_perf_metrics(logits, attrs, model, summary=True):
+    loss = model.loss_scene_attrs(logits, attrs)
+    
+    pred_yes = tf.greater(logits, 0)
+    pred_no = tf.logical_not(pred_yes)
+    
+    expect_yes = tf.greater(attrs,0)
+    expect_no = tf.logical_not(expect_yes)
+
+    pred_yes_and_exp_yes = tf.logical_and(pred_yes, expect_yes)
+    pred_no_and_exp_no = tf.logical_and(pred_no, expect_no)
+
+    false_pos = tf.reduce_sum(tf.to_int32(pred_yes), reduction_indices=1) - tf.reduce_sum(tf.to_int32(pred_yes_and_exp_yes), reduction_indices=1)
+    false_neg = tf.reduce_sum(tf.to_int32(pred_no), reduction_indices=1) - tf.reduce_sum(tf.to_int32(pred_no_and_exp_no), reduction_indices=1)
+
+    true_elts_per_row = tf.reduce_sum(tf.to_int32(expect_yes), reduction_indices=1)
+
+    false_pos_avg = tf.reduce_mean(false_pos)
+    false_neg_avg = tf.reduce_mean(false_neg)
+    true_avg = tf.reduce_mean(true_elts_per_row)
+    
+    # which are yes, but mismatch with attributes
+    # which are no, but mismatch with attributes
+    #error_rate = (yesses*(1 - attrs) + (1-yesses)*attrs)/100.
+    #error_rate = tf.reduce_mean(error_rate)
+    return {'loss':loss,
+            'false_positive':false_pos_avg,
+            'false_negative':false_neg_avg,
+            'true_elts':true_avg}
+
 def performance_metrics(logits, y, model, summary=True):
-    y = y[:,0]
     loss = model.loss_scene_category(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
