@@ -70,7 +70,6 @@ tf.app.flags.DEFINE_integer('num_gpus', 1, """How many GPUs to use. Defaults to 
 tf.app.flags.DEFINE_boolean('log_device_placement', False,
                             """Whether to log device placement.""")
 
-
 print("num gpus: ", FLAGS.num_gpus)
 
 # Id is used to identify a lot of our output files uniquely within outputdir
@@ -111,27 +110,6 @@ if start_from != '':
 
     print("CHECKPOINT FILE TO USE: %s" % cf)
 
-Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initial_learning_rate decay_rate dropout num_images grid_x eval_batch_size')
-
-# Dataset Parameters
-# Training Parameters
-# Add them here so we can print them all out to logs (helps to see if we changed them).
-PARAMS = Params(
-    batch_size = 200,
-    eval_batch_size = 1000,
-    load_size = 256,
-    fine_size = 224,
-    c = 3,
-    data_mean = np.asarray([0.45834960097,0.44674252445,0.41352266842]),
-    initial_learning_rate = 0.001,
-    decay_rate = 0.8,
-    dropout = 0.5, # Dropout, probability to keep units
-    num_images = 100000, # hardcoded for now.
-    grid_x = 10, # for showing eval batches in tensorboard
-)
-
-EPOCH_SIZE = PARAMS.num_images // PARAMS.batch_size
-
 step_display = FLAGS.step_display
 step_save = FLAGS.step_save
 number_to_beat = 0.99
@@ -153,31 +131,6 @@ def print_param_sizes():
         print("(%s:%s). shape: %s. total: %d/%d (%.0f%%)" %
               (v.name, v.dtype, v.get_shape(), w, total_parameters, 100*(w/total_parameters)))
         
-
-# Construct dataloader
-opt_data_train = {
-    'data_h5': 'miniplaces_256_train.h5',
-    #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
-    #'data_list': 'YOURPATH/train.txt', # MODIFY PATH ACCORDINGLY
-    'load_size': PARAMS.load_size,
-    'fine_size': PARAMS.fine_size,
-    'data_mean': PARAMS.data_mean,
-    'batch_size': PARAMS.batch_size,
-    'buffered_batches':3,
-    'randomize': True
-    }
-
-opt_data_val = {
-    'data_h5': 'miniplaces_256_val.h5',
-    #'data_root': 'YOURPATH/images/',   # MODIFY PATH ACCORDINGLY
-    #'data_list': 'YOURPATH/val.txt',   # MODIFY PATH ACCORDINGLY
-    'load_size': PARAMS.load_size,
-    'fine_size': PARAMS.fine_size,
-    'data_mean': PARAMS.data_mean,
-    'batch_size': PARAMS.eval_batch_size,
-    'randomize': False,
-    'buffered_batches':1
-    }
 
 # loader_train = DataLoaderDisk(**opt_data_train)
 # loader_val = DataLoaderDisk(**opt_data_val)
@@ -241,23 +194,6 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1, expand_factor=4):
 
     return tf.image.resize_images(prelim, size=new_sizes)
 
-def topkerror(logits, y, k):
-   bools = tf.nn.in_top_k(logits, y, k)
-   topkerr  = tf.reduce_mean(tf.cast(1 - tf.cast(bools, tf.int32), tf.float32), name="top%derr" % k)
-   return topkerr
-
-def performance_metrics(logits, y, summary=True):
-    y = y[:,0]
-    loss = model.loss_scene_category(logits, y)
-    top1err = topkerror(logits, y, 1)
-    top5err = topkerror(logits, y, 5)
-
-    if summary:
-        tf.scalar_summary('loss', loss)
-        tf.scalar_summary('top1err', top1err)
-        tf.scalar_summary('top5err', top5err)
-
-    return {'loss':loss, 'top1':top1err, 'top5':top5err}
 
 # (orm: adapted from the CIFAR-10 example in tensorflow.)
 # a tower is a version of the model, including loss, that will run on a single gpu
@@ -490,7 +426,8 @@ with tf.Graph().as_default():
     init = tf.initialize_all_variables() 
 
     # perf eval.
-    metrics_target = performance_metrics(eval_logits[0], placeholders[0]['labels'])
+    metrics_target = performance_metrics(eval_logits[0], placeholders[0]['labels'],
+                                         model)
     
     # Launch the graph
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
@@ -553,32 +490,33 @@ with tf.Graph().as_default():
                          name='Training',
                          step=step,
                          writer=summary_writer_train)
-                
+
                 # run val on larger batches to denoise print output a bit?
                 images_batch_val, labels_batch_val = loader_val.next_batch()
                 feed_dict_eval= { placeholders[0]['images']: images_batch_val,
                                   placeholders[0]['labels']: labels_batch_val,
                                   keep_dropout: 1.}
-                res = run_test(metrics_target,
-                               feed_dict_eval,
-                               name='Validation',
-                               step=step,
-                               writer=summary_writer_eval)
 
-                if (res['top5'] < number_to_beat - 0.005):
-                    number_to_beat = res['top5']
-                    if res['top5'] < FLAGS.baseline_error:
+                run_test(metrics_target,
+                         feed_dict_eval,
+                         name='Validation',
+                         step=step,
+                         writer=summary_writer_eval)
+
+
+                if step % 3*step_display == 0:
+                    res = full_validation((placeholders[0]['images'],
+                                           placeholders[0]['labels'], metrics_target),
+                                          sess, loader_val, {keep_dropout: 1.})
+                    if (res < number_to_beat - 0.005):
+                        number_to_beat = res
+                    if res < FLAGS.baseline_error:
                         print("Saving model of new record %.3f" % number_to_beat)
                         saver.save(sess, path_save + ("%.3f" % number_to_beat),
                                    global_step=step)
-                    
+
                 end = time.time()
-                    
-                #gradsum = tf.merge_summaries(tf.get_collection(TRAINING_SUMMARIES), 'gradient_summaries')
                 print("Metrics run took %.1f seconds. Top5 to beat: %.3f" %( end - start, number_to_beat))
-
-
-                    
 
             # Run optimization op (backprop)
             feed_dict = {}
