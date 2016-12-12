@@ -34,7 +34,7 @@ FLAGS = tf.app.flags.FLAGS
 tf.app.flags.DEFINE_integer('training_iters', 100000,
                             """Number of batches to run.""")
 
-tf.app.flags.DEFINE_integer('step_display', 250,
+tf.app.flags.DEFINE_integer('step_display', 200,
                             """Number of batches to run before evaluating
                             and printing model performance metrics""")
 
@@ -198,7 +198,7 @@ def put_kernels_on_grid (kernel, grid_Y, grid_X, pad = 1, expand_factor=4):
 # (orm: adapted from the CIFAR-10 example in tensorflow.)
 # a tower is a version of the model, including loss, that will run on a single gpu
 def tower_loss(scope, images, labels, keep_dropout, scope_name):
-  """Calculate the total loss on a single model.
+  """Calculate the total loss on a single model
 
   Args:
     scope: unique prefix string identifying the model tower, e.g. 'tower_0'
@@ -206,6 +206,10 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   Returns:
      Tensor of shape [] containing the total loss for a batch of data
   """
+
+  (y,attributes) = labels
+
+
   # each tower does its IO separately.
   # where is the batch.
   
