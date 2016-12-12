@@ -208,28 +208,31 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
   """
 
   (y,attributes) = labels
-
-
-  # each tower does its IO separately.
-  # where is the batch.
-  
+  print("variables before model_train")
+  show_variables()
   # build inference Graph for training
-  logits = model.model_train(images, keep_dropout, local_scope_name=scope_name)
+  (cat_logits_train, attr_logits_train) = model.model_train(images, keep_dropout, local_scope_name=scope_name)
+  print("variables after model_train")
+  show_variables()
 
   # get loss.
-  #category_loss = model.loss_scene_category(logits, labels[0], name=category_loss)
-  #tf.scalar_summary(category_loss.name, category_loss)
-  print("attrs", attributes.get_shape())
-  attribute_loss = model.loss_scene_attrs(logits, attributes)
-  reg_loss = tf.add_n(tf.get_collection('losses'), name='reg_loss')
-  total_loss = attribute_loss + reg_loss # + category_loss
-  print("attr_loss shape", attribute_loss.get_shape())
-  print("reg_loss shape", reg_loss.get_shape())
-  # add a summary per tower
-  tf.scalar_summary(reg_loss.name, reg_loss)
+  category_loss = model.loss_scene_category(cat_logits_train, y)
+  category_loss = tf.identity(category_loss, name='category_loss')
+  tf.scalar_summary(category_loss.name, category_loss)
+
+  attribute_loss = model.loss_scene_attrs(attr_logits_train, attributes)
+  attribute_loss = tf.identity(attribute_loss, name='attribute_loss')
   tf.scalar_summary(attribute_loss.name, attribute_loss)
-  tf.scalar_summary(total_loss.name, total_loss)
-  return total_loss
+  
+  reg_loss = tf.add_n(tf.get_collection('losses'), name='reg_loss')
+  tf.scalar_summary(reg_loss.name, reg_loss)
+  
+  attr_loss = attribute_loss#+ reg_loss
+  cat_loss = category_loss #+ reg_loss
+
+  # tf.scalar_summary(total_loss.name, total_loss)
+  # 2 trainables
+  return (cat_loss, attr_loss, cat_loss) #+ category_loss)
 
 
 # (orm: adapted from CIFAR-10)
@@ -292,6 +295,11 @@ def record_signal(signum, frame):
 
 signal.signal(signal.SIGINT, record_signal)
 
+
+def show_variables():
+    for v in tf.all_variables():
+        print(v.name, v)
+
 # start with an empty graph and make everything add stuff to it.
 with tf.Graph().as_default():
 #tf.device("/cpu:0"):
@@ -299,10 +307,15 @@ with tf.Graph().as_default():
     summary_writer_train = tf.train.SummaryWriter(LOGDIR+'/train_' + ID, graph=tf.get_default_graph())
     summary_writer_eval = tf.train.SummaryWriter(LOGDIR+'/eval_'+ ID, graph=tf.get_default_graph())
 
-    global_step = tf.get_variable('global_step', [],
+    global_step_cat = tf.get_variable('global_step_cat', [],
                                   initializer=tf.constant_initializer(0),
                                   trainable=False, dtype=tf.int32)
 
+    global_step_attr = tf.get_variable('global_step_attr', [],
+                                  initializer=tf.constant_initializer(0),
+                                  trainable=False, dtype=tf.int32)
+
+    
     #start strong first epoch, never go below .0001?
     epoch_cutoffs = [ 1,    3,     5,     10]
     values =         [.002, .001, .0005, .0002, .0001]
@@ -327,28 +340,38 @@ with tf.Graph().as_default():
     keep_dropout = tf.placeholder(tf.float32, name='dropout_rate') # shared dropout setting
 
     tower_grads = []
+    # cat_opt = model.optimizer(learning_rate)
+    # attr_opt = model.optimizer(learning_rate)
     opt = model.optimizer(learning_rate)
-
-    for i in range(FLAGS.num_gpus):
+    
+    #for i in range(FLAGS.num_gpus):
         #with tf.device('/gpu:%d' %i ):
         # NB this is a name scope, not a variable scope.
-        with tf.name_scope('%s_%d' % ("tower", i)) as scope:
-            xs = tf.identity(placeholders[i]['images'])
-            ys = tf.identity(placeholders[i]['labels'])
-            attrs = tf.identity(placeholders[i]['attributes'])
-            kd = tf.identity(keep_dropout)
-            loss = tower_loss(scope, xs, (ys,attrs), kd, scope)
+    with tf.name_scope('%s_%d' % ("tower", 0)) as scope:
+        xs = tf.identity(placeholders[0]['images'])
+        ys = tf.identity(placeholders[0]['labels'])
+        attrs = tf.identity(placeholders[0]['attributes'])
+        kd = tf.identity(keep_dropout)
+        print("tower loss construction")
+        (cat_loss, attr_loss, mixed_loss) = tower_loss(scope, xs, (ys,attrs), kd, scope)
+        tf.get_variable_scope().reuse_variables()
+        
 
-            # stuff after here that calls get variable
-            # will reuse variables of the same name
-            # rather than make a new one
-            tf.get_variable_scope().reuse_variables()
-            # based on cifar. somehow only the last tower summaries are here
-            #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-            grads = opt.compute_gradients(loss)
-            # which are these?
-            #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
-            tower_grads.append(grads)
+    # stuff after here that calls get variable
+    # will reuse variables of the same name
+    # rather than make a new one
+    # based on cifar. somehow only the last tower summaries are here
+    #summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+
+
+    # cat_train_op = cat_opt.minimize(cat_loss, global_step=global_step_cat)
+    # attr_train_op = attr_opt.minimize(attr_loss, global_step=global_step_attr)
+    joint_op = opt.minimize(mixed_loss, global_step=global_step_cat)
+
+
+    # which are these?
+    #TODO summaries = tf.get_collection(tf.GraphKeys.SUMMARIES, scope)
+    #tower_grads.append(grads)
 
     # this assumes the conv1 layer is done.
     # Visualize conv1 features
@@ -360,13 +383,14 @@ with tf.Graph().as_default():
         grid = put_kernels_on_grid (weights, grid_y, grid_x)
         conv_summary = tf.image_summary('conv1/features', grid, max_images=1)
 
-
+    tf.get_variable_scope().reuse_variables()
     # use the same variables to construct the evaluation graph.
     # note. runnable model must be constructed after training ones for now
-    eval_logits = model.model_run(placeholders[0]['images'], local_scope_name='eval')
+    (cat_logits_eval, attr_logits_eval) = model.model_run(placeholders[0]['images'], local_scope_name='eval')
+    print("variables after model run")
+    show_variables()
 
-    # TODO: monitor learning rate of Adam?
-    grads = average_gradients(tower_grads)
+    #grads = average_gradients(tower_grads)
     lrsum = tf.scalar_summary('learning_rate', learning_rate)
 
     TRAINING_SUMMARIES = 'training_summaries'
@@ -385,7 +409,7 @@ with tf.Graph().as_default():
 
     # # now apply merged gradients to model variables
     # with tf.control_dependencies(before_update.values()):
-    train_op = opt.apply_gradients(grads, global_step=global_step)
+    #train_op = opt.apply_gradients(grads, global_step=global_step)
 
     # this code attempts to measure the amount of change in our weights after each iteration
     # these operations depend on the train op:
@@ -429,15 +453,21 @@ with tf.Graph().as_default():
         tf.histogram_summary(var.op.name, var, name=var.op.name + '/histogram_summary')
 
     print("variables declared prior to saver and init:")
-    for v in tf.all_variables():
-        print(v.name, v)
+    show_variables()
     print_param_sizes()
     saver = tf.train.Saver()
     init = tf.initialize_all_variables() 
 
     # perf eval.
-    metrics_target = performance_metrics(eval_logits[0], placeholders[0]['labels'],
-                                         model)
+    metrics_target_cat = cat_perf_metrics(
+        cat_logits_eval,
+        placeholders[0]['labels'],
+        model)
+
+    metrics_target_attr = attribute_perf_metrics(
+        attr_logits_eval,
+        placeholders[0]['attributes'],
+        model)
     
     # Launch the graph
     with tf.Session(config=tf.ConfigProto(log_device_placement=FLAGS.log_device_placement, allow_soft_placement=True)) as sess:
@@ -449,7 +479,9 @@ with tf.Graph().as_default():
             print("starting from random state...")
             sess.run(init)
 
-        step = sess.run(global_step) # usable by python code
+        (step_cat, step_attr) = sess.run([global_step_cat, global_step_attr]) # usable by python code
+        assert(abs(step_cat - step_attr) <= 1)
+        step = step_cat + step_attr
         print("Initial step is %d" % step)
 
         iter_start = None
@@ -480,24 +512,37 @@ with tf.Graph().as_default():
 
                 # for validation set, do not run training metrics (or else will update gradients...)
                 eval_summaries = [s for s in tf.get_collection(tf.GraphKeys.SUMMARIES) if (s not in tf.get_collection(TRAINING_SUMMARIES))]
-                metrics_target['all_summaries'] = tf.merge_summary(eval_summaries, 'eval_summary')
+                metrics_target_cat['all_summaries'] = tf.merge_summary(eval_summaries, 'eval_summary')
                 # includes gradient summaries for training target
-                metrics_target['all_summaries'] = tf.merge_all_summaries()
-                def run_test(target, feed_dict, name, step, writer):
+                metrics_target_cat['all_summaries'] = tf.merge_all_summaries()
+
+                def run_test_cat(target, feed_dict, name, step, writer):
                     res = sess.run(target, feed_dict=feed_dict, )
                     print("-Iter " + str(step) + ", %s Loss= " % name + \
-                      "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
-                      "{:.3f}".format(res['top1']) + ", Top5 = " + \
-                      "{:.3f}".format(res['top5']))
+                          "{:.4f}".format(res['loss']) + ", Error Top1 = " + \
+                          "{:.3f}".format(res['top1']) + ", Top5 = " + \
+                          "{:.3f}".format(res['top5']))
                     writer.add_summary(res['all_summaries'], step)
                     return res
-
+                
+                def run_test_attr(target, feed_dict, name, step, writer):
+                    res = sess.run(target, feed_dict=feed_dict)
+                    print("-Iter %d. %s Loss=%.4f. false_pos=%.3f. false_neg=%.3f. true_elts %.3f" % (step, name, res['loss'], res['false_positive'], res['false_negative'], res['true_elts']))
+                    
+                    #writer.add_summary(res['all_summaries'], step)
+                    return res
+                
                 feed_dict_train={placeholders[0]['images']: batches[0]['images'],
                                  placeholders[0]['labels']: batches[0]['labels'],
                                  placeholders[0]['attributes']: batches[0]['attributes'],
                                  keep_dropout: 1.}
-                
-                run_test(metrics_target,
+                run_test_cat(metrics_target_cat,
+                         feed_dict_train,
+                         name='Training',
+                         step=step,
+                         writer=summary_writer_train)
+
+                run_test_attr(metrics_target_attr,
                          feed_dict_train,
                          name='Training',
                          step=step,
@@ -510,25 +555,41 @@ with tf.Graph().as_default():
                                   placeholders[0]['attributes'] : attributes_batch_val,
                                   keep_dropout: 1.}
 
-                run_test(metrics_target,
+                run_test_cat(metrics_target_cat,
                          feed_dict_eval,
                          name='Validation',
                          step=step,
                          writer=summary_writer_eval)
 
+                run_test_attr(metrics_target_attr,
+                        feed_dict_eval,
+                         name='Validation',
+                         step=step,
+                         writer=summary_writer_eval)
+                                
 
-                if (step % (2*step_display)) == 0:
-                    res = full_validation((placeholders[0]['images'],
-                                           placeholders[0]['labels'],
-                                           placeholders[0]['attributes'],
-                                           metrics_target),
+                if (step % 250) == 0:
+                    res = full_validation_attr((placeholders[0]['images'],
+                                                placeholders[0]['labels'],
+                                                placeholders[0]['attributes'],
+                                                metrics_target_attr),
                                           sess, loader_val, {keep_dropout: 1.})
+
+                    res = full_validation_cat((placeholders[0]['images'],
+                                                  placeholders[0]['labels'],
+                                                  placeholders[0]['attributes'],
+                                                  metrics_target_cat),
+                                          sess, loader_val, {keep_dropout: 1.})
+
+                    
                     if (res < number_to_beat - 0.005):
                         number_to_beat = res
                     if res < FLAGS.baseline_error:
                         print("Saving model of new record %.3f" % number_to_beat)
                         saver.save(sess, path_save + ("%.3f" % number_to_beat),
                                    global_step=step)
+
+                    
 
                 end = time.time()
                 print("Metrics run took %.1f seconds. Top5 to beat: %.3f" %( end - start, number_to_beat))
@@ -549,12 +610,26 @@ with tf.Graph().as_default():
             else:
                 run_metadata = None
                 options = None
+
+            (_, step_cat) = sess.run([joint_op, global_step_cat],
+                                    feed_dict=feed_dict,
+                                     options=options,
+                                     run_metadata=run_metadata)
+
+            # if step % 2 == 0:
+            #     (_, step_cat) = sess.run([cat_train_op, global_step_cat],
+            #                          feed_dict=feed_dict,
+            #                          options=options,
+            #                          run_metadata=run_metadata)
+
+            # else:
+            #     (_, step_attr) = sess.run([attr_train_op, global_step_attr],
+            #                          feed_dict=feed_dict,
+            #                          options=options,
+            #                          run_metadata=run_metadata)
                 
-            (_, step) = sess.run([train_op, global_step],
-                                feed_dict=feed_dict,
-                                options=options,
-                                run_metadata=run_metadata)
-            
+            step = step_cat + step_attr
+            #print(step, step_cat, step_attr)
             train_end = time.time()
 
             if FLAGS.timeline_trace:

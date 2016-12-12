@@ -231,26 +231,28 @@ def _model(x, keep_dropout, is_training, local_scope_name):
         fc7 = tf.nn.relu(fc7)
         fc7 = tf.nn.dropout(fc7, keep_dropout)
 
-    # Output FC
-    # should we batch normalize this?
-    # the rationale seems to be that as we change these weights,
-    # then, the next layer will be harder to train.
-    # but the next layer is not being trained here, so leaving it
-    # unnormalized
-    with tf.variable_scope('output') as scope:
-        w =  _normal_regularized_cpu_var('weights', [4096, 100], wd=FC_WD)
-        bo =  _zero_cpu_var('bias', [100])
+    # layer for attributes
+    with tf.variable_scope('attr') as scope:
+        w =  _normal_regularized_cpu_var('weights',
+                                         [4096,
+                                          PARAMS.num_scene_attributes], wd=FC_WD)
+        bo =  _zero_cpu_var('bias', [PARAMS.num_scene_attributes])
+
+        # keep the logits name as is (used to look up model op)
+        attr_out = tf.add(tf.matmul(fc7, w), bo, name='logits')
+
+        #bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
+        #attr = tf.nn.relu(attr_out)
+
+    # layer for categories
+    with tf.variable_scope('category') as scope:
+        w =  _normal_regularized_cpu_var('weights', [4096,
+                                                     PARAMS.num_categories], wd=FC_WD)
+        bo =  _zero_cpu_var('bias', [PARAMS.num_categories])
         # keep the logits name as is (used to look up model op)
         out = tf.add(tf.matmul(fc7, w), bo, name='logits')
 
-    num_scene_attr_types = 102
-    with tf.variable_scope('output2') as scope:
-        w =  _normal_regularized_cpu_var('weights', [4096, num_scene_attr_types], wd=FC_WD)
-        bo =  _zero_cpu_var('bias', [num_scene_attr_types])
-        # keep the logits name as is (used to look up model op)
-        out2 = tf.add(tf.matmul(fc7, w), bo, name='logits')
-
-    return out, out2
+    return (out, attr_out)
 
 def model_train(x, keep_dropout, local_scope_name):
     return _model(x, keep_dropout, is_training=True, local_scope_name=local_scope_name)
@@ -262,17 +264,19 @@ def model_run(x, local_scope_name):
 def loss_scene_category(logits, y):
     cross_entropy_per_example = tf.nn.sparse_softmax_cross_entropy_with_logits(logits, y, name='cross_entropy_per_example')
     cross_entropy = tf.reduce_mean(cross_entropy_per_example, name='cross_entropy')
-    #tf.add_to_collection('losses', cross_entropy)
-    
-    #return tf.add_n(tf.get_collection('losses'), name='total_loss')
     return cross_entropy
 
-def loss_scene_attrs(logits, y):
-    cross_entropy_per_example = tf.nn.sigmoid_cross_entropy_with_logits(logits, tf.to_float(y), name='cross_entropy_per_example')
-    cross_entropy = tf.reduce_mean(cross_entropy_per_example, name='cross_entropy')
-    #tf.add_to_collection('losses', cross_entropy)
-    
-    #return tf.add_n(tf.get_collection('losses'), name='total_loss')
+def loss_scene_attrs(logits, attrs):
+    y = tf.sigmoid(attrs) # we are geting logits from the other net
+    # this loss is not exclusive
+    cross_entropy_per_example = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight=0.2, name='cross_entropy_per_example')
+
+    # sum losses over all 102 attributes (weighted equally right now)
+    cross_entropy = tf.reduce_sum(cross_entropy_per_example,
+                                  reduction_indices=1, name='cross_entropy')
+
+    # mean loss over batch
+    cross_entropy = tf.reduce_mean(cross_entropy, name='cross_entropy')
     return cross_entropy
 
 def optimizer(learning_rate):

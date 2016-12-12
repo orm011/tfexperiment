@@ -43,7 +43,7 @@ class DataLoaderH5(object):
     #the data-loading task
     def load_task(self):
         while True:
-            category_batch = np.zeros((self.batch_size, 1))
+            category_batch = np.zeros((self.batch_size))
             attribute_batch = np.zeros((self.batch_size, common.PARAMS.num_scene_attributes))
             images_batch = np.zeros((self.batch_size, self.fine_size, self.fine_size, 3)) 
 

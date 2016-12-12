@@ -104,7 +104,7 @@ def attribute_perf_metrics(logits, attrs, model, summary=True):
             'false_negative':false_neg_avg,
             'true_elts':true_avg}
 
-def performance_metrics(logits, y, model, summary=True):
+def cat_perf_metrics(logits, y, model, summary=True):
     loss = model.loss_scene_category(logits, y)
     top1err = topkerror(logits, y, 1)
     top5err = topkerror(logits, y, 5)
@@ -117,11 +117,46 @@ def performance_metrics(logits, y, model, summary=True):
     return {'loss':loss, 'top1':top1err, 'top5':top5err}
 
 
-def full_validation(target_tuple, sess, loader, otherph={}):
+def full_validation_attr(target_tuple, sess, loader, otherph={}):
     # Evaluate on the whole validation set
     start = time.time()
-    (x,y,metrics_target) = target_tuple
+    (x,y,attr,metrics_target) = target_tuple
     
+    print('[%s running full validation set test]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    # (orm) added + batch_size - 1 to make this work
+    # with small validation sets (and give 1)
+    num_batch = (loader.size() + PARAMS.eval_batch_size - 1) // PARAMS.eval_batch_size
+    print("Validation set size: %d. Batch size: %d. Num batches %d." % (
+            loader.size(), PARAMS.eval_batch_size, num_batch))
+
+    feed_dict = otherph
+    errs = []
+    fn = []
+    for i in range(num_batch):
+        images_batch, labels_batch, attr_batch = loader.next_batch()
+        feed_dict[x] = images_batch
+        feed_dict[y] = labels_batch
+        feed_dict[attr] = attr_batch
+        r = sess.run(metrics_target, feed_dict)
+        errs.append(r['false_positive'])
+        fn.append(r['false_negative'])
+        print('...',)
+
+    errs.sort()
+    fn.sort()
+    fp_total = np.mean(errs)
+    fn_total = np.mean(fn)
+    fprange=(errs[0], errs[-1])
+    fnrange=(fn[0], fn[-1])
+    
+    print('Atrr. Evaluation Finished After %.2fs' % (time.time() - start))
+    print('FalsePos = %.4f. (Min,Max) = (%.3f, %.3f)'% (fp_total, fprange[0], fprange[1]))
+    print('FalseNeg = %.4f. (Min,Max) = (%.3f, %.3f)'% (fn_total, fnrange[0], fprange[0]))
+
+def full_validation_cat(target_tuple, sess, loader, otherph={}):
+    # Evaluate on the whole validation set
+    start = time.time()
+    (x,y,attr, metrics_target) = target_tuple
     print('[%s running full validation set test]:' %(datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
     # (orm) added + batch_size - 1 to make this work
     # with small validation sets (and give 1)
@@ -129,26 +164,28 @@ def full_validation(target_tuple, sess, loader, otherph={}):
     err1_total = 0.
     err5_total = 0.
     print("Validation set size: %d. Batch size: %d. Num batches %d." % (
-            loader.size(), PARAMS.eval_batch_size, num_batch))
-
+        loader.size(), PARAMS.eval_batch_size, num_batch))
+    
     feed_dict = otherph
     err1s = []
     err5s = []
+    
     for i in range(num_batch):
-        images_batch, labels_batch = loader.next_batch()
+        images_batch, labels_batch, attr_batch = loader.next_batch()
         feed_dict[x] = images_batch
         feed_dict[y] = labels_batch
+        feed_dict[attr] = attr_batch
         r = sess.run(metrics_target, feed_dict)
         err1s.append(r['top1'])
         err5s.append(r['top5'])
         print('...',)
-
-    err1s.sort()
-    err5s.sort()
-    err1_total = np.mean(err1s)
-    err5_total = np.mean(err5s)
-    
-    rng=(err5s[0], err5s[-1])
-    print('Evaluation Finished After %.2fs.\nError Top1 = %.4f.\nError Top5 = %.4f.\n(Min,Max) = (%.3f, %.3f)' %(time.time() - start, err1_total, err5_total, rng[0], rng[1]))
-
-    return err5_total
+        
+        err1s.sort()
+        err5s.sort()
+        err1_total = np.mean(err1s)
+        err5_total = np.mean(err5s)
+        
+        rng=(err5s[0], err5s[-1])
+        print('Category Evaluation Finished After %.2fs.\nError Top1 = %.4f.\nError Top5 = %.4f.\n(Min,Max) = (%.3f, %.3f)' %(time.time() - start, err1_total, err5_total, rng[0], rng[1]))
+        
+        return err5_total
