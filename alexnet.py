@@ -240,17 +240,15 @@ def _model(x, keep_dropout, is_training, local_scope_name):
 
         # keep the logits name as is (used to look up model op)
         attr_out = tf.add(tf.matmul(fc7, w), bo, name='logits')
-
-        #bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
-        #attr = tf.nn.relu(attr_out)
+        bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
+        attr = tf.nn.relu(bn_attr)
 
     # layer for categories
     with tf.variable_scope('category') as scope:
-        w =  _normal_regularized_cpu_var('weights', [4096,
+        w =  _normal_regularized_cpu_var('weights', [PARAMS.num_scene_attributes,
                                                      PARAMS.num_categories], wd=FC_WD)
         bo =  _zero_cpu_var('bias', [PARAMS.num_categories])
-        # keep the logits name as is (used to look up model op)
-        out = tf.add(tf.matmul(fc7, w), bo, name='logits')
+        out = tf.add(tf.matmul(attr, w), bo, name='logits')
 
     return (out, attr_out)
 
