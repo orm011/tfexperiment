@@ -301,7 +301,8 @@ with tf.Graph().as_default():
     epoch_cutoffs = [ 1,    3,     5,     10]
     values =         [.002, .001, .0005, .0002, .0001]
     boundaries = [c*EPOCH_SIZE for c in epoch_cutoffs]
-    learning_rate = tf.train.piecewise_constant(global_step, boundaries, values, name='learning_rate')
+    learning_rate = PARAMS.initial_learning_rate
+    #tf.train.piecewise_constant(global_step, boundaries, values, name='learning_rate')
     #learning_rate = tf.train.exponential_decay(PARAMS.initial_learning_rate, global_step, PARAMS.num_images//PARAMS.batch_size, PARAMS.decay_rate, staircase=True)
 
     # tf Graph input placeholders for each tower
@@ -504,7 +505,7 @@ with tf.Graph().as_default():
                          writer=summary_writer_eval)
 
 
-                if step % 3*step_display == 0:
+                if step % 2*step_display == 0:
                     res = full_validation((placeholders[0]['images'],
                                            placeholders[0]['labels'], metrics_target),
                                           sess, loader_val, {keep_dropout: 1.})
