@@ -53,7 +53,7 @@ class DataLoaderH5(object):
                 category = self.cat_set[actual_idx]
                 attributes = self.attr_set[actual_idx]
 
-                image = image.astype(np.float32)/255. - self.data_mean
+                image = 2*(image.astype(np.float32)/255. - self.data_mean)
                 if self.randomize:
                     flip = np.random.random_integers(0, 1)
                     if flip>0:

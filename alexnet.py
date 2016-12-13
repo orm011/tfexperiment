@@ -92,15 +92,14 @@ MODE_bncallibrate = 2
 # init scale is initial value for scale
 def batch_normalization(layer, mode, scale_init, local_scope_name):
     depth = layer.get_shape()[-1]
-    decay = 0.99 # used for updating population stuff.
+    decay = 0.9 # used for updating population stuff.
     
     ## trained variables.
-    offset = _zero_cpu_var('batch_norm_offset', shape=[depth], val=0.)
+    offset = _zero_cpu_var('batch_norm_offset', shape=[depth], val=0.,)
 
     # with 0.005, all will be between 0.9 and 1.1
     scale = _normal_regularized_cpu_var('batch_norm_scale', shape=[depth],
-                                        mean=1., stddev=0.005, wd=BN_WD)
-    # never negative
+                                    mean=1., stddev=0.02, wd=BN_WD)
     
     
     ## approximation of a population average
@@ -143,14 +142,14 @@ def batch_normalization(layer, mode, scale_init, local_scope_name):
         with tf.control_dependencies([update_mean, update_variance]):
             bn = tf.nn.batch_normalization(layer,
                                            batch_mean, batch_variance,
-                                           offset, scale, variance_epsilon=0.001)
+                                           offset, scale, variance_epsilon=0.00001)
     elif mode == Mode.testing:
         bn = tf.nn.batch_normalization(layer,
                                        pop_mean,
                                        pop_variance,
                                        offset,
                                        scale,
-                                       variance_epsilon=0.001)
+                                       variance_epsilon=0.00001)
     else:
         assert('unknown mode')
         
@@ -240,15 +239,15 @@ def _model(x, keep_dropout, is_training, local_scope_name):
 
         # keep the logits name as is (used to look up model op)
         attr_out = tf.add(tf.matmul(fc7, w), bo, name='logits')
-        bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
-        attr = tf.nn.relu(bn_attr)
+        # bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
+        # attr = tf.nn.relu(bn_attr)
 
     # layer for categories
     with tf.variable_scope('category') as scope:
-        w =  _normal_regularized_cpu_var('weights', [PARAMS.num_scene_attributes,
+        w =  _normal_regularized_cpu_var('weights', [4096,
                                                      PARAMS.num_categories], wd=FC_WD)
-        bo =  _zero_cpu_var('bias', [PARAMS.num_categories])
-        out = tf.add(tf.matmul(attr, w), bo, name='logits')
+        #bo =  _zero_cpu_var('bias', [PARAMS.num_categories])
+        out = tf.matmul(fc7, w) # tf.add(, bo, name='logits')
 
     return (out, attr_out)
 

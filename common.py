@@ -24,7 +24,7 @@ Params = namedtuple('Params', 'batch_size load_size fine_size c data_mean initia
 # Training Parameters
 # Add them here so we can print them all out to logs (helps to see if we changed them).
 PARAMS = Params(
-    batch_size = 200,
+    batch_size = 256,
     eval_batch_size = 1000,
     load_size = 256,
     fine_size = 224,
