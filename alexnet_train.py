@@ -232,7 +232,7 @@ def tower_loss(scope, images, labels, keep_dropout, scope_name):
 
   # tf.scalar_summary(total_loss.name, total_loss)
   # 2 trainables
-  return (cat_loss, attr_loss, cat_loss) #+ category_loss)
+  return (cat_loss, attr_loss, cat_loss + attr_loss)
 
 
 # (orm: adapted from CIFAR-10)
@@ -542,11 +542,11 @@ with tf.Graph().as_default():
                          step=step,
                          writer=summary_writer_train)
 
-                # run_test_attr(metrics_target_attr,
-                #          feed_dict_train,
-                #          name='Training',
-                #          step=step,
-                #          writer=summary_writer_train)
+                run_test_attr(metrics_target_attr,
+                         feed_dict_train,
+                         name='Training',
+                         step=step,
+                         writer=summary_writer_train)
 
                 # run val on larger batches to denoise print output a bit?
                 images_batch_val, labels_batch_val, attributes_batch_val = loader_val.next_batch()
@@ -561,19 +561,19 @@ with tf.Graph().as_default():
                          step=step,
                          writer=summary_writer_eval)
 
-                # run_test_attr(metrics_target_attr,
-                #         feed_dict_eval,
-                #          name='Validation',
-                #          step=step,
-                #          writer=summary_writer_eval)
+                run_test_attr(metrics_target_attr,
+                        feed_dict_eval,
+                         name='Validation',
+                         step=step,
+                         writer=summary_writer_eval)
                                 
 
                 if (step % 500) == 0:
-                    # res = full_validation_attr((placeholders[0]['images'],
-                    #                             placeholders[0]['labels'],
-                    #                             placeholders[0]['attributes'],
-                    #                             metrics_target_attr),
-                    #                       sess, loader_fullval, {keep_dropout: 1.})
+                    res = full_validation_attr((placeholders[0]['images'],
+                                                placeholders[0]['labels'],
+                                                placeholders[0]['attributes'],
+                                                metrics_target_attr),
+                                          sess, loader_fullval, {keep_dropout: 1.})
 
                     res = full_validation_cat((placeholders[0]['images'],
                                                   placeholders[0]['labels'],

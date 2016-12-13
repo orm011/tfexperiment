@@ -235,10 +235,10 @@ def _model(x, keep_dropout, is_training, local_scope_name):
         w =  _normal_regularized_cpu_var('weights',
                                          [4096,
                                           PARAMS.num_scene_attributes], wd=FC_WD)
-        bo =  _zero_cpu_var('bias', [PARAMS.num_scene_attributes])
+        #bo =  _zero_cpu_var('bias', [PARAMS.num_scene_attributes])
 
         # keep the logits name as is (used to look up model op)
-        attr_out = tf.add(tf.matmul(fc7, w), bo, name='logits')
+        attr_out = tf.matmul(fc7, w)
         # bn_attr = batch_normalization(attr_out, is_training, scale_init=1., local_scope_name=(local_scope_name,scope))
         # attr = tf.nn.relu(bn_attr)
 
@@ -266,7 +266,7 @@ def loss_scene_category(logits, y):
 def loss_scene_attrs(logits, attrs):
     y = tf.sigmoid(attrs) # we are geting logits from the other net
     # this loss is not exclusive
-    cross_entropy_per_example = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight=0.05, name='cross_entropy_per_example')
+    cross_entropy_per_example = tf.nn.weighted_cross_entropy_with_logits(logits, y, pos_weight=10, name='cross_entropy_per_example')
 
     # sum losses over all 102 attributes (weighted equally right now)
     cross_entropy = tf.reduce_sum(cross_entropy_per_example,
